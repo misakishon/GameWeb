@@ -15,13 +15,26 @@ import {
   type Vec2,
 } from './samuraiRig'
 import SamuraiPovShop, { type ShopItem } from './SamuraiPovShop'
+import FullWorldMapModal from './FullWorldMapModal'
+import {
+  CONNECTOR_STONES,
+  CONTINENTS,
+  ROAD_SIGNPOSTS,
+  WORLD_LIMIT,
+  getContinentById,
+  getContinentLiquidBoundary,
+  getNearestContinent,
+  getTreeColliderRadius,
+  hash1,
+  handDrift,
+  type ContinentConfig,
+  type ContinentId,
+} from './continents'
 
 type LockedMode = 'Idle' | 'Walk' | 'Run' | null
 type PaperTone = 'white' | 'studio'
 type CameraView = 'birds-eye' | 'oblique-34'
 
-// Merchant Stall right in the NW Courtyard Plaza (immediately visible on load!)
-const SHOP_POS: Vec2 = { x: -135, y: -110 }
 const SHOP_INTERACT_RADIUS = 115
 
 interface Particle {
@@ -32,7 +45,7 @@ interface Particle {
   size: number
   life: number
   maxLife: number
-  kind: 'dust' | 'leaf' | 'spark' | 'afterimage' | 'gold-petal'
+  kind: 'dust' | 'weather' | 'spark' | 'afterimage' | 'gold-petal'
   rot: number
   vrot: number
 }
@@ -94,37 +107,6 @@ interface AttackBox {
   hit: boolean
 }
 
-interface TreeCanopy {
-  x: number
-  y: number
-  r: number
-  kind: 'bamboo' | 'pine' | 'maple'
-  seed: number
-}
-
-interface StoneSlab {
-  x: number
-  y: number
-  w: number
-  h: number
-  rot: number
-  seed: number
-}
-
-function hash1(n: number): number {
-  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123
-  return s - Math.floor(s)
-}
-
-function handDrift(pos: number, seed: number, amp = 1.4): number {
-  return (
-    (Math.sin(pos * 0.035 + seed * 3.7) * 0.55 +
-      Math.sin(pos * 0.092 + seed * 7.1) * 0.30 +
-      Math.sin(pos * 0.21 + seed * 11.3) * 0.15) *
-    amp
-  )
-}
-
 function createPaperGrainCanvas(baseHex: string): HTMLCanvasElement {
   const size = 256
   const off = document.createElement('canvas')
@@ -142,130 +124,13 @@ function createPaperGrainCanvas(baseHex: string): HTMLCanvasElement {
   return off
 }
 
-const WORLD_LIMIT = 1150
-
-const STEPPING_STONES: StoneSlab[] = (() => {
-  const stones: StoneSlab[] = []
-  let idx = 1
-  for (let ring = 1; ring <= 2; ring++) {
-    const count = ring * 8
-    const rad = ring * 54
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2 + ring * 0.22
-      stones.push({
-        x: Math.cos(a) * rad,
-        y: Math.sin(a) * rad,
-        w: 36 + hash1(idx * 3.1) * 10,
-        h: 26 + hash1(idx * 5.7) * 8,
-        rot: a + Math.PI * 0.5 + (hash1(idx) - 0.5) * 0.18,
-        seed: idx++,
-      })
-    }
-  }
-  for (let y = -155; y >= -560; y -= 52) {
-    const curveX = Math.sin(y * 0.008) * 28
-    stones.push({
-      x: curveX + (hash1(idx * 1.9) - 0.5) * 14,
-      y,
-      w: 44 + hash1(idx * 2.3) * 14,
-      h: 28 + hash1(idx * 4.1) * 8,
-      rot: (hash1(idx * 7.1) - 0.5) * 0.22,
-      seed: idx++,
-    })
-  }
-  for (let y = 155; y <= 520; y += 54) {
-    const curveX = Math.sin(y * 0.007) * 34
-    stones.push({
-      x: curveX + (hash1(idx * 1.9) - 0.5) * 14,
-      y,
-      w: 44 + hash1(idx * 2.3) * 14,
-      h: 28 + hash1(idx * 4.1) * 8,
-      rot: (hash1(idx * 7.1) - 0.5) * 0.22,
-      seed: idx++,
-    })
-  }
-  for (let x = 150; x <= 620; x += 52) {
-    if (x > 250 && x < 450) continue
-    const curveY = Math.sin(x * 0.007) * 24
-    stones.push({
-      x,
-      y: curveY + (hash1(idx * 2.7) - 0.5) * 10,
-      w: 34 + hash1(idx * 3.7) * 12,
-      h: 36 + hash1(idx * 5.1) * 10,
-      rot: (hash1(idx * 6.3) - 0.5) * 0.22,
-      seed: idx++,
-    })
-  }
-  for (let x = -150; x >= -560; x -= 52) {
-    const curveY = Math.cos(x * 0.006) * 22
-    stones.push({
-      x,
-      y: curveY + (hash1(idx * 2.1) - 0.5) * 10,
-      w: 34 + hash1(idx * 3.3) * 12,
-      h: 36 + hash1(idx * 4.7) * 10,
-      rot: (hash1(idx * 6.9) - 0.5) * 0.22,
-      seed: idx++,
-    })
-  }
-  return stones
-})()
-
-const TREES: TreeCanopy[] = [
-  { x: -270, y: -250, r: 60, kind: 'bamboo', seed: 11 },
-  { x: -355, y: -185, r: 52, kind: 'bamboo', seed: 17 },
-  { x: 245, y: -240, r: 68, kind: 'maple', seed: 23 },
-  { x: 340, y: -290, r: 56, kind: 'bamboo', seed: 29 },
-  { x: -260, y: 245, r: 72, kind: 'pine', seed: 31 },
-  { x: -375, y: 205, r: 58, kind: 'bamboo', seed: 37 },
-  { x: 225, y: 260, r: 60, kind: 'bamboo', seed: 41 },
-  { x: 465, y: 225, r: 66, kind: 'maple', seed: 43 },
-  { x: 525, y: -155, r: 64, kind: 'pine', seed: 47 },
-  { x: -535, y: -275, r: 70, kind: 'pine', seed: 53 },
-  { x: -165, y: -490, r: 58, kind: 'maple', seed: 59 },
-  { x: 175, y: -485, r: 60, kind: 'maple', seed: 61 },
-  { x: -190, y: 470, r: 66, kind: 'bamboo', seed: 67 },
-  { x: 185, y: 465, r: 64, kind: 'pine', seed: 71 },
-]
-
-const LANTERNS: Vec2[] = [
-  { x: 92, y: -130 },
-  { x: -92, y: 130 },
-  { x: 92, y: 130 },
-  { x: 228, y: -56 },
-  { x: 228, y: 56 },
-  { x: 470, y: -56 },
-  { x: 470, y: 56 },
-]
-
-const ZEN_ROCKS: { x: number; y: number; r: number; seed: number }[] = [
-  { x: -360, y: -68, r: 20, seed: 101 },
-  { x: -285, y: 62, r: 16, seed: 107 },
-]
-
-const TORII_PILLARS: { x: number; y: number; r: number }[] = [
-  { x: -56, y: -386, r: 10 },
-  { x: 56, y: -386, r: 10 },
-]
-
 const PLAYER_COLLIDER_R = 14
-const POND_CENTER: Vec2 = { x: 350, y: 0 }
-const BRIDGE_WALK = { minX: 236, maxX: 464, halfH: 19, deckHalfH: 26 }
 
-function getPondBoundary(angle: number): { x: number; y: number; rx: number; ry: number } {
-  const norm = (((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2)
-  const seg = norm * 40
-  const rx = 112 + Math.sin(angle * 3) * 14 + handDrift(seg * 15, 77, 4)
-  const ry = 175 + Math.cos(angle * 2) * 18 + handDrift(seg * 15, 83, 4)
-  return {
-    x: POND_CENTER.x + Math.cos(angle) * rx,
-    y: POND_CENTER.y + Math.sin(angle) * ry,
-    rx,
-    ry,
-  }
-}
-
-function getTreeColliderRadius(tr: TreeCanopy): number {
-  return Math.round(tr.r * 0.52)
+function getGatePillars(continent: ContinentConfig): { x: number; y: number; r: number }[] {
+  return [
+    { x: continent.gatePos.x - 56, y: continent.gatePos.y + 4, r: 10 },
+    { x: continent.gatePos.x + 56, y: continent.gatePos.y + 4, r: 10 },
+  ]
 }
 
 export default function Samurai2DPlatformer() {
@@ -273,6 +138,8 @@ export default function Samurai2DPlatformer() {
   const keysRef = useRef<Record<string, boolean>>({})
   const virtualRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 })
 
+  const [continentId, setContinentId] = useState<ContinentId>('kyoto')
+  const [fullMapOpen, setFullMapOpen] = useState(false)
   const [animState, setAnimState] = useState<SamuraiAnimMode>('Idle')
   const [lockedMode, setLockedMode] = useState<LockedMode>(null)
   const [cameraView, setCameraView] = useState<CameraView>('birds-eye')
@@ -285,7 +152,15 @@ export default function Samurai2DPlatformer() {
   const [showHitboxes, setShowHitboxes] = useState(false)
   const [showMinimap, setShowMinimap] = useState(true)
   const [speedScale, setSpeedScale] = useState(1.0)
-  const [hudStats, setHudStats] = useState({ speed: 0, x: 0, y: 0, fps: 60, nearShop: false, focusSec: 0 })
+  const [hudStats, setHudStats] = useState({
+    speed: 0,
+    x: 0,
+    y: 0,
+    heading: Math.PI,
+    fps: 60,
+    nearShop: false,
+    focusSec: 0,
+  })
 
   // Shop, Weapon Switch Skill & Economy State
   const [coins, setCoins] = useState(120)
@@ -296,6 +171,11 @@ export default function Samurai2DPlatformer() {
   const [ownedItems, setOwnedItems] = useState<Record<string, boolean>>({})
   const [equippedGear, setEquippedGear] = useState<SamuraiGear & { spiritBell?: boolean }>({})
 
+  const activeContinent = getContinentById(continentId)
+  const continentRef = useRef<ContinentConfig>(CONTINENTS[0])
+  const fullMapOpenRef = useRef(false)
+  const switchContinentRef = useRef<((id: ContinentId) => void) | null>(null)
+  const teleportWorldRef = useRef<((wx: number, wy: number, label?: string, color?: string) => void) | null>(null)
   const lockedRef = useRef<LockedMode>(null)
   const cameraViewRef = useRef<CameraView>('birds-eye')
   const paperToneRef = useRef<PaperTone>('white')
@@ -334,6 +214,7 @@ export default function Samurai2DPlatformer() {
   useEffect(() => { showMinimapRef.current = showMinimap }, [showMinimap])
   useEffect(() => { speedScaleRef.current = speedScale }, [speedScale])
   useEffect(() => { shopOpenRef.current = shopOpen }, [shopOpen])
+  useEffect(() => { fullMapOpenRef.current = fullMapOpen }, [fullMapOpen])
   useEffect(() => { gearRef.current = equippedGear }, [equippedGear])
   useEffect(() => { bowUnlockedRef.current = Boolean(ownedItems.warBow) }, [ownedItems])
   useEffect(() => { activeWeaponRef.current = activeWeapon }, [activeWeapon])
@@ -429,8 +310,13 @@ export default function Samurai2DPlatformer() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const whitePaperPat = ctx.createPattern(createPaperGrainCanvas('#f7f3ec'), 'repeat')
-    const studioPaperPat = ctx.createPattern(createPaperGrainCanvas('#a9aba8'), 'repeat')
+    const paperPatterns = new Map<string, CanvasPattern | null>()
+    const getPaperPattern = (hex: string): CanvasPattern | null => {
+      if (!paperPatterns.has(hex)) {
+        paperPatterns.set(hex, ctx.createPattern(createPaperGrainCanvas(hex), 'repeat'))
+      }
+      return paperPatterns.get(hex) ?? null
+    }
 
     const char = {
       x: 0,
@@ -460,38 +346,75 @@ export default function Samurai2DPlatformer() {
     const arrowProjectiles: ArrowProjectile[] = []
     const floatingTexts: FloatingText[] = []
 
-    // Collectible Gold Koban Coins around the courtyard
-    const mapCoins: MapCoin[] = [
-      { x: -65, y: -45, value: 15, collected: false, respawnTimer: 0, phase: 0.2 },
-      { x: 115, y: -35, value: 15, collected: false, respawnTimer: 0, phase: 1.4 },
-      { x: 350, y: 0, value: 25, collected: false, respawnTimer: 0, phase: 2.3 },
-      { x: 0, y: -235, value: 20, collected: false, respawnTimer: 0, phase: 3.1 },
-      { x: -245, y: 35, value: 20, collected: false, respawnTimer: 0, phase: 4.0 },
-      { x: 15, y: 185, value: 15, collected: false, respawnTimer: 0, phase: 5.2 },
-    ]
+    const mapCoins: MapCoin[] = []
+    const dummies: BambooDummy[] = []
 
-    // Slashable Tameshigiri Bamboo Training Dummies (drop +25 Ryo when sliced!)
-    const dummies: BambooDummy[] = [
-      { x: 105, y: -105, cutTimer: 0, hitAngle: 0 },
-      { x: 125, y: 105, cutTimer: 0, hitAngle: 0 },
-      { x: -125, y: 110, cutTimer: 0, hitAngle: 0 },
-      { x: -35, y: -295, cutTimer: 0, hitAngle: 0 },
-    ]
-
-    for (let i = 0; i < 24; i++) {
-      particles.push({
-        x: (Math.random() - 0.5) * 1400,
-        y: (Math.random() - 0.5) * 1000,
-        vx: -18 - Math.random() * 24,
-        vy: 14 + Math.random() * 18,
-        size: 3.2 + Math.random() * 3.0,
-        life: Math.random() * 10,
-        maxLife: 10 + Math.random() * 8,
-        kind: 'leaf',
-        rot: Math.random() * Math.PI * 2,
-        vrot: (Math.random() - 0.5) * 2.4,
-      })
+    const spawnAmbientWeather = (cur: ContinentConfig, centerX = cam.x, centerY = cam.y) => {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        if (particles[i].kind === 'weather') particles.splice(i, 1)
+      }
+      const count = cur.weatherKind === 'snow' || cur.weatherKind === 'sand' ? 34 : 26
+      for (let i = 0; i < count; i++) {
+        const wk = cur.weatherKind
+        particles.push({
+          x: centerX + (Math.random() - 0.5) * 1400,
+          y: centerY + (Math.random() - 0.5) * 1000,
+          vx:
+            wk === 'sand'
+              ? 88 + Math.random() * 68
+              : wk === 'snow'
+                ? -10 + Math.random() * 20
+                : wk === 'firefly'
+                  ? (Math.random() - 0.5) * 26
+                  : wk === 'ember'
+                    ? -12 + Math.random() * 24
+                    : -18 - Math.random() * 24,
+          vy:
+            wk === 'sand'
+              ? 8 + Math.random() * 14
+              : wk === 'snow'
+                ? 22 + Math.random() * 22
+                : wk === 'firefly'
+                  ? (Math.random() - 0.5) * 20
+                  : wk === 'ember'
+                    ? -26 - Math.random() * 34
+                    : 14 + Math.random() * 18,
+          size:
+            wk === 'sand'
+              ? 5 + Math.random() * 7
+              : wk === 'snow'
+                ? 1.8 + Math.random() * 2.4
+                : wk === 'firefly'
+                  ? 2.2 + Math.random() * 1.8
+                  : wk === 'ember'
+                    ? 1.8 + Math.random() * 2.2
+                    : 3.2 + Math.random() * 3.0,
+          life: Math.random() * 10,
+          maxLife: 10 + Math.random() * 8,
+          kind: 'weather',
+          rot: Math.random() * Math.PI * 2,
+          vrot: (Math.random() - 0.5) * 2.4,
+        })
+      }
     }
+
+    // Populate ALL 5 Continents' Gold Coins & Bamboo Dummies into the single unified open world!
+    for (const cont of CONTINENTS) {
+      for (const c of cont.coins) {
+        mapCoins.push({
+          x: c.x,
+          y: c.y,
+          value: c.value,
+          collected: false,
+          respawnTimer: 0,
+          phase: c.phase,
+        })
+      }
+      for (const d of cont.dummies) {
+        dummies.push({ x: d.x, y: d.y, cutTimer: 0, hitAngle: 0 })
+      }
+    }
+    spawnAmbientWeather(continentRef.current, 0, 0)
 
     const spawnFootDust = (x: number, y: number, heading: number, count: number, boost = 1) => {
       const bx = -Math.cos(heading)
@@ -656,8 +579,7 @@ export default function Samurai2DPlatformer() {
       attackBoxes.push(atkBox)
     }
 
-    // Unified solid collision resolver: keeps character out of Koi Pond Water (except on Wooden Bridge),
-    // Trees, Zen Rocks, Stone Lanterns, Torii Gate Pillars, Merchant Stall & intact Training Dummies!
+    // Unified solid collision resolver across ALL 5 Continents in one seamless world!
     const resolveWorldCollisions = (x: number, y: number, prevX: number, prevY: number): Vec2 => {
       let cx = clamp(x, -WORLD_LIMIT, WORLD_LIMIT)
       let cy = clamp(y, -WORLD_LIMIT, WORLD_LIMIT)
@@ -692,74 +614,77 @@ export default function Samurai2DPlatformer() {
         }
       }
 
-      // 1. Merchant Stall counter (always solid)
-      pushOutRect(SHOP_POS.x, SHOP_POS.y, 40, 26)
-
-      // 2. Intact Bamboo Training Dummies
+      // 1. Intact Bamboo Training Dummies across the world
       for (const dm of dummies) {
-        if (dm.cutTimer <= 0) {
+        if (dm.cutTimer <= 0 && Math.abs(cx - dm.x) < 40 && Math.abs(cy - dm.y) < 40) {
           pushOutCircle(dm.x, dm.y, 11)
         }
       }
 
-      if (showBgRef.current) {
-        // 3. Koi Pond Water & Wooden Bridge Deck / Railings
-        const wasOnBridge =
-          prevX >= BRIDGE_WALK.minX &&
-          prevX <= BRIDGE_WALK.maxX &&
-          Math.abs(prevY) <= BRIDGE_WALK.deckHalfH
-        const enteringBridge =
-          cx >= BRIDGE_WALK.minX &&
-          cx <= BRIDGE_WALK.maxX &&
-          Math.abs(prevY) <= BRIDGE_WALK.halfH + 4 &&
-          Math.abs(cy) <= BRIDGE_WALK.deckHalfH
+      // 2. Check all nearby continents (fast bounding-box cull!)
+      for (const cur of CONTINENTS) {
+        if (Math.abs(cx - cur.origin.x) > 920 || Math.abs(cy - cur.origin.y) > 920) continue
 
-        if (wasOnBridge || enteringBridge) {
-          // Safely walking on the Wooden Bridge: clamp inside North/South wooden railings
-          if (cx >= BRIDGE_WALK.minX && cx <= BRIDGE_WALK.maxX) {
-            cy = clamp(cy, -BRIDGE_WALK.halfH, BRIDGE_WALK.halfH)
-          }
-        } else {
-          // Outside bridge deck: block entry into Koi Pond water & bridge side railings!
-          const dxP = cx - POND_CENTER.x
-          const dyP = cy - POND_CENTER.y
-          const ang = Math.atan2(dyP, dxP)
-          const pt = getPondBoundary(ang)
-          const radX = pt.rx + PLAYER_COLLIDER_R
-          const radY = pt.ry + PLAYER_COLLIDER_R
-          const nx = dxP / radX
-          const ny = dyP / radY
-          const d = Math.hypot(nx, ny)
-          if (d < 1.0) {
-            // Allow smooth stepping onto the West/East ends of the bridge only when aligned with the deck
-            const atWestOpening = prevX <= BRIDGE_WALK.minX + 6 && Math.abs(cy) <= BRIDGE_WALK.halfH
-            const atEastOpening = prevX >= BRIDGE_WALK.maxX - 6 && Math.abs(cy) <= BRIDGE_WALK.halfH
-            if (!atWestOpening && !atEastOpening) {
-              const safeD = Math.max(d, 0.0001)
-              cx = POND_CENTER.x + (nx / safeD) * radX
-              cy = POND_CENTER.y + (ny / safeD) * radY
+        // Merchant Stall counter (always solid)
+        pushOutRect(cur.shopPos.x, cur.shopPos.y, 40, 26)
+
+        if (showBgRef.current) {
+          // Continent Liquid (Pond / Oasis / Glacial Lake / Lagoon / Magma) & Walkable Bridge Deck
+          const br = cur.bridge
+          const wasOnBridge =
+            prevX >= br.minX &&
+            prevX <= br.maxX &&
+            Math.abs(prevY - br.yCenter) <= br.deckHalfH
+          const enteringBridge =
+            cx >= br.minX &&
+            cx <= br.maxX &&
+            Math.abs(prevY - br.yCenter) <= br.halfH + 4 &&
+            Math.abs(cy - br.yCenter) <= br.deckHalfH
+
+          if (wasOnBridge || enteringBridge) {
+            if (cx >= br.minX && cx <= br.maxX) {
+              cy = clamp(cy, br.yCenter - br.halfH, br.yCenter + br.halfH)
+            }
+          } else {
+            const dxP = cx - cur.liquidCenter.x
+            const dyP = cy - cur.liquidCenter.y
+            const ang = Math.atan2(dyP, dxP)
+            const pt = getContinentLiquidBoundary(cur, ang)
+            const radX = pt.rx + PLAYER_COLLIDER_R
+            const radY = pt.ry + PLAYER_COLLIDER_R
+            const nx = dxP / radX
+            const ny = dyP / radY
+            const d = Math.hypot(nx, ny)
+            if (d < 1.0) {
+              const atWestOpening = prevX <= br.minX + 6 && Math.abs(cy - br.yCenter) <= br.halfH
+              const atEastOpening = prevX >= br.maxX - 6 && Math.abs(cy - br.yCenter) <= br.halfH
+              if (!atWestOpening && !atEastOpening) {
+                const safeD = Math.max(d, 0.0001)
+                cx = cur.liquidCenter.x + (nx / safeD) * radX
+                cy = cur.liquidCenter.y + (ny / safeD) * radY
+              }
             }
           }
-        }
 
-        // 4. Trees (solid bamboo/pine/maple trunks & dense root cluster)
-        for (const tr of TREES) {
-          pushOutCircle(tr.x, tr.y, getTreeColliderRadius(tr))
-        }
+          // Trees & Cacti
+          for (const tr of cur.trees) {
+            pushOutCircle(tr.x, tr.y, getTreeColliderRadius(tr))
+          }
 
-        // 5. Zen Garden Rocks
-        for (const rk of ZEN_ROCKS) {
-          pushOutCircle(rk.x, rk.y, rk.r)
-        }
+          // Rocks
+          for (const rk of cur.rocks) {
+            pushOutCircle(rk.x, rk.y, rk.r)
+          }
 
-        // 6. Stone Lanterns
-        for (const ln of LANTERNS) {
-          pushOutCircle(ln.x, ln.y, 12)
-        }
+          // Lanterns
+          for (const ln of cur.lanterns) {
+            pushOutCircle(ln.x, ln.y, 12)
+          }
 
-        // 7. North Shrine Torii Gate Pillars (walk cleanly through the gate arch, blocked by pillars)
-        for (const tp of TORII_PILLARS) {
-          pushOutCircle(tp.x, tp.y, tp.r)
+          // North Gate Pillars
+          for (const tp of getGatePillars(cur)) {
+            pushOutCircle(tp.x, tp.y, tp.r)
+          }
         }
       }
 
@@ -860,9 +785,52 @@ export default function Samurai2DPlatformer() {
       resetSamuraiCloth(sideRig, 0, 0, char.facing)
     }
 
+    const teleportTo = (wx: number, wy: number, label?: string, color?: string) => {
+      const safe = resolveWorldCollisions(wx, wy, wx, wy)
+      const next = getNearestContinent(safe.x, safe.y)
+      const prevWeather = continentRef.current.weatherKind
+      continentRef.current = next
+      setContinentId(next.id)
+
+      char.x = safe.x
+      char.y = safe.y
+      char.vx = 0
+      char.vy = 0
+      char.slashTimer = 0
+      char.bowCooldown = 0
+      char.bowRecoil = 0
+      char.dashTimer = 0
+      cam.x = safe.x
+      cam.y = safe.y
+      slashArcs.length = 0
+      attackBoxes.length = 0
+      arrowProjectiles.length = 0
+      resetSamuraiTopDownCloth(topRig, safe.x, safe.y, char.heading)
+      resetSamuraiCloth(sideRig, safe.x, safe.y, char.facing)
+      if (prevWeather !== next.weatherKind) {
+        spawnAmbientWeather(next, safe.x, safe.y)
+      }
+      spawnFootDust(safe.x, safe.y, char.heading, 10, 1.35)
+      floatingTexts.push({
+        x: safe.x,
+        y: safe.y - 48,
+        text: label ?? `TELEPORTED · ${next.name.toUpperCase()}`,
+        color: color ?? next.badgeColor,
+        age: 0,
+        duration: 1.75,
+      })
+    }
+
+    const switchContinent = (id: ContinentId) => {
+      const next = getContinentById(id)
+      teleportTo(next.origin.x, next.origin.y, `TELEPORTED · ${next.name.toUpperCase()}`, next.badgeColor)
+    }
+
     triggerDashRef.current = doDash
     triggerSlashRef.current = doAttack
     triggerSwitchWeaponRef.current = doSwitchWeapon
+    switchContinentRef.current = switchContinent
+    teleportWorldRef.current = teleportTo
     resetRef.current = doReset
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -873,15 +841,32 @@ export default function Samurai2DPlatformer() {
       const wasDown = keysRef.current[k]
       keysRef.current[k] = true
 
-      if (!wasDown && k === 'e') {
-        const distToShop = Math.hypot(char.x - SHOP_POS.x, char.y - SHOP_POS.y)
+      if (!wasDown && k === 'escape') {
+        if (fullMapOpenRef.current) {
+          setFullMapOpen(false)
+          return
+        }
+        if (shopOpenRef.current) {
+          setShopOpen(false)
+          return
+        }
+      }
+
+      if (!wasDown && k === 'm' && !shopOpenRef.current) {
+        setFullMapOpen((v) => !v)
+        return
+      }
+
+      if (!wasDown && k === 'e' && !fullMapOpenRef.current) {
+        const nearest = getNearestContinent(char.x, char.y)
+        const distToShop = Math.hypot(char.x - nearest.shopPos.x, char.y - nearest.shopPos.y)
         if (distToShop <= SHOP_INTERACT_RADIUS + 40 || shopOpenRef.current) {
           setShopOpen((v) => !v)
         } else {
           floatingTexts.push({
             x: char.x,
             y: char.y - 36,
-            text: 'Walk to Merchant Stall (NW) to Shop!',
+            text: `Walk to ${nearest.shortName} Merchant Stall (NW) to Shop!`,
             color: '#54534f',
             age: 0,
             duration: 1.2,
@@ -889,11 +874,16 @@ export default function Samurai2DPlatformer() {
         }
         return
       }
-      if (!wasDown && k === 'escape' && shopOpenRef.current) {
-        setShopOpen(false)
+
+      if (shopOpenRef.current || fullMapOpenRef.current) return
+
+      if (!wasDown && ['1', '2', '3', '4', '5'].includes(k)) {
+        const target = CONTINENTS[Number(k) - 1]
+        if (target) {
+          switchContinent(target.id)
+        }
         return
       }
-      if (shopOpenRef.current) return
 
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k) && lockedRef.current !== null) {
         lockedRef.current = null
@@ -933,8 +923,10 @@ export default function Samurai2DPlatformer() {
     // FREEHAND INK-WASH BIRD'S-EYE WORLD + MERCHANT SHOPKEEPER RENDERERS
     // =========================================================================
     const isWhitePaper = () => paperToneRef.current === 'white'
-    const getStoneFill = () => (isWhitePaper() ? '#f1ece0' : '#b6b8b3')
-    const getWoodFill = () => (isWhitePaper() ? '#ebe3d3' : '#a8a9a3')
+    const getStoneFill = (cur: ContinentConfig = continentRef.current) =>
+      isWhitePaper() ? cur.stoneFill : cur.stoneBoardFill
+    const getWoodFill = (cur: ContinentConfig = continentRef.current) =>
+      isWhitePaper() ? cur.woodFill : cur.woodBoardFill
 
     const drawSketchCircle = (cx: number, cy: number, r: number, seed: number, alpha = 0.55, lw = 1.1) => {
       ctx.beginPath()
@@ -954,12 +946,13 @@ export default function Samurai2DPlatformer() {
     }
 
     const drawBackdropPaper = (W: number, H: number) => {
-      const pat = isWhitePaper() ? whitePaperPat : studioPaperPat
+      const baseHex = isWhitePaper() ? '#f1ece1' : '#9ea19d'
+      const pat = getPaperPattern(baseHex)
       if (pat) {
         ctx.fillStyle = pat
         ctx.fillRect(0, 0, W, H)
       } else {
-        ctx.fillStyle = isWhitePaper() ? '#f7f3ec' : '#a9aba8'
+        ctx.fillStyle = baseHex
         ctx.fillRect(0, 0, W, H)
       }
       const grad = ctx.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.2, W * 0.5, H * 0.5, Math.max(W, H) * 0.72)
@@ -970,9 +963,10 @@ export default function Samurai2DPlatformer() {
     }
 
     // --- 2.5D HIGH-ANGLE WANDERING MERCHANT CHARACTER & WOODEN STALL ON THE MAP! ---
-    const drawMerchantShopGround = (time: number, nearShop: boolean) => {
+    const drawMerchantShopGround = (cur: ContinentConfig, time: number, nearShop: boolean) => {
+      const shopPos = cur.shopPos
       ctx.save()
-      ctx.translate(SHOP_POS.x, SHOP_POS.y)
+      ctx.translate(shopPos.x, shopPos.y)
 
       const white = isWhitePaper()
       const ink = '#363532'
@@ -1024,7 +1018,7 @@ export default function Samurai2DPlatformer() {
       }
 
       // 3. Standing 2.5D Merchant Character (Master Kenji — matching bold ink, 3D sandals & multi-finger hands!)
-      const lookBias = clamp((char.x - SHOP_POS.x) * 0.015, -3.2, 3.2)
+      const lookBias = clamp((char.x - shopPos.x) * 0.015, -3.2, 3.2)
       const merchBob = Math.sin(time * 2.6) * 1.0
       const waveSwing = nearShop ? Math.sin(time * 7.2) * 0.34 : Math.sin(time * 2.2) * 0.08
       const clothFill = white ? '#f6f3ea' : '#c4c6c0'
@@ -1427,9 +1421,10 @@ export default function Samurai2DPlatformer() {
     }
 
     // 2.5D Sloped Merchant Stall Roof Awning, Hanging Noren Curtains & Floating Prompt!
-    const drawMerchantShopOverhead = (time: number, nearShop: boolean) => {
+    const drawMerchantShopOverhead = (cur: ContinentConfig, time: number, nearShop: boolean) => {
+      const shopPos = cur.shopPos
       ctx.save()
-      ctx.translate(SHOP_POS.x, SHOP_POS.y)
+      ctx.translate(shopPos.x, shopPos.y)
 
       const white = isWhitePaper()
       const ink = '#363532'
@@ -1607,66 +1602,344 @@ export default function Samurai2DPlatformer() {
       }
     }
 
-    const drawBirdsEyeWorldGround = (time: number, nearShop: boolean) => {
+    const drawBirdsEyeWorldGround = (time: number, nearShopId: ContinentId | null, W: number, H: number) => {
+      const white = isWhitePaper()
+      const cullX = W * 0.5 + 950
+      const cullY = H * 0.5 + 950
+
       if (showBgRef.current) {
-        // 1. Zen Raked Gravel Garden (West)
-        ctx.save()
-        ctx.strokeStyle = 'rgba(62, 60, 56, 0.15)'
-        ctx.lineWidth = 1.0
-        for (let gy = -150; gy <= 150; gy += 12) {
+        // 0A. Softly Feathered Biome Territory Washes so walking between continents blends seamlessly!
+        for (const cont of CONTINENTS) {
+          if (Math.abs(cont.origin.x - cam.x) > cullX || Math.abs(cont.origin.y - cam.y) > cullY) continue
+          const fillHex = white ? cont.paperBase : cont.boardBase
+          const grad = ctx.createRadialGradient(
+            cont.origin.x,
+            cont.origin.y,
+            260,
+            cont.origin.x,
+            cont.origin.y,
+            880
+          )
+          grad.addColorStop(0, fillHex)
+          grad.addColorStop(0.72, fillHex)
+          grad.addColorStop(1, 'rgba(241, 236, 225, 0)')
+          ctx.fillStyle = grad
           ctx.beginPath()
-          for (let gx = -470; gx <= -180; gx += 16) {
-            const wave = Math.sin(gx * 0.025 + gy * 0.02) * 3.5
-            if (gx === -470) ctx.moveTo(gx, gy + wave)
-            else ctx.lineTo(gx, gy + wave)
-          }
-          ctx.stroke()
-        }
-        for (const rk of ZEN_ROCKS) {
-          drawSketchCircle(rk.x, rk.y, rk.r + 14, rk.seed + 1, 0.18, 0.9)
-          drawSketchCircle(rk.x, rk.y, rk.r + 26, rk.seed + 2, 0.14, 0.85)
-          ctx.fillStyle = getStoneFill()
-          ctx.beginPath()
-          ctx.ellipse(rk.x, rk.y, rk.r, rk.r * 0.76, 0.4, 0, Math.PI * 2)
+          ctx.arc(cont.origin.x, cont.origin.y, 880, 0, Math.PI * 2)
           ctx.fill()
-          ctx.strokeStyle = 'rgba(56, 54, 50, 0.62)'
-          ctx.lineWidth = 1.15
+        }
+
+        // 0B. Cardinal Connecting Stepping-Stone Roads linking Kyoto Center to all 4 outer Continents!
+        for (const st of CONNECTOR_STONES) {
+          if (Math.abs(st.x - cam.x) > W * 0.5 + 80 || Math.abs(st.y - cam.y) > H * 0.5 + 80) continue
+          ctx.save()
+          ctx.translate(st.x, st.y)
+          ctx.rotate(st.rot)
+          ctx.fillStyle = 'rgba(42, 40, 36, 0.06)'
+          ctx.beginPath()
+          ctx.roundRect(-st.w * 0.5 + 2.5, -st.h * 0.5 + 3, st.w, st.h, 6)
+          ctx.fill()
+          ctx.fillStyle = white ? '#eae3d2' : '#abada7'
+          ctx.beginPath()
+          ctx.roundRect(-st.w * 0.5, -st.h * 0.5, st.w, st.h, 5)
+          ctx.fill()
+          ctx.strokeStyle = 'rgba(64, 62, 58, 0.36)'
+          ctx.lineWidth = 1.0
           ctx.stroke()
+          ctx.restore()
+        }
+
+        // 0C. Wooden Trail Signposts at the 4 Cardinal Roads
+        for (const sp of ROAD_SIGNPOSTS) {
+          if (Math.abs(sp.x - cam.x) > W * 0.5 + 180 || Math.abs(sp.y - cam.y) > H * 0.5 + 120) continue
+          ctx.save()
+          ctx.translate(sp.x, sp.y)
+          ctx.font = 'bold 9.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+          const tw = ctx.measureText(sp.label).width + 18
+          ctx.fillStyle = 'rgba(250, 247, 240, 0.92)'
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 1.1
+          ctx.beginPath()
+          ctx.roundRect(-tw * 0.5, -10, tw, 20, 3)
+          ctx.fill()
+          ctx.stroke()
+          ctx.fillStyle = sp.accent
+          ctx.fillRect(-tw * 0.5, -10, 4, 20)
+          ctx.fillStyle = '#26262b'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(sp.label, 2, 0.5)
+          ctx.restore()
+        }
+
+        // Loop over every visible continent in the unified open world!
+        for (const cur of CONTINENTS) {
+          if (Math.abs(cur.origin.x - cam.x) > cullX || Math.abs(cur.origin.y - cam.y) > cullY) continue
+          const liqC = cur.liquidCenter
+
+          // 1. Continent Terrain Accents (local to cur.origin) & Ground Rocks (world coords)
+          ctx.save()
+          ctx.save()
+          ctx.translate(cur.origin.x, cur.origin.y)
+          if (cur.id === 'kyoto') {
+            ctx.strokeStyle = 'rgba(62, 60, 56, 0.15)'
+            ctx.lineWidth = 1.0
+            for (let gy = -150; gy <= 150; gy += 12) {
+              ctx.beginPath()
+              for (let gx = -470; gx <= -180; gx += 16) {
+                const wave = Math.sin(gx * 0.025 + gy * 0.02) * 3.5
+                if (gx === -470) ctx.moveTo(gx, gy + wave)
+                else ctx.lineTo(gx, gy + wave)
+              }
+              ctx.stroke()
+            }
+          } else if (cur.id === 'desert') {
+            ctx.strokeStyle = white ? 'rgba(156, 118, 66, 0.24)' : 'rgba(92, 74, 48, 0.24)'
+            ctx.lineWidth = 1.25
+            for (let dy = -340; dy <= 340; dy += 44) {
+              ctx.beginPath()
+              for (let dx = -560; dx <= 160; dx += 24) {
+                const wave = Math.sin(dx * 0.012 + dy * 0.015) * 14 + Math.cos(dx * 0.025) * 5
+                if (dx === -560) ctx.moveTo(dx, dy + wave)
+                else ctx.lineTo(dx, dy + wave)
+              }
+              ctx.stroke()
+            }
+            ctx.fillStyle = white ? 'rgba(198, 162, 108, 0.14)' : 'rgba(124, 102, 72, 0.16)'
+            for (const [dx, dy, rx, ry] of [
+              [-360, -140, 120, 42],
+              [-330, 120, 110, 38],
+              [-140, 310, 130, 36],
+            ]) {
+              ctx.beginPath()
+              ctx.ellipse(dx, dy, rx, ry, -0.14, 0, Math.PI * 2)
+              ctx.fill()
+            }
+          } else if (cur.id === 'frost') {
+            ctx.fillStyle = white ? 'rgba(255, 255, 255, 0.42)' : 'rgba(220, 232, 240, 0.18)'
+            for (const [sx, sy, rx, ry] of [
+              [-350, -90, 118, 44],
+              [-310, 110, 102, 36],
+              [-150, -280, 96, 32],
+              [110, 290, 112, 34],
+            ]) {
+              ctx.beginPath()
+              ctx.ellipse(sx, sy, rx, ry, 0.12, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.strokeStyle = 'rgba(92, 120, 140, 0.22)'
+              ctx.lineWidth = 1.0
+              ctx.stroke()
+            }
+          } else if (cur.id === 'jungle') {
+            ctx.fillStyle = white ? 'rgba(104, 138, 92, 0.16)' : 'rgba(56, 82, 54, 0.22)'
+            for (const [jx, jy, rx, ry] of [
+              [-340, -60, 105, 68],
+              [-270, 95, 88, 56],
+              [115, 265, 92, 52],
+            ]) {
+              ctx.beginPath()
+              ctx.ellipse(jx, jy, rx, ry, 0.25, 0, Math.PI * 2)
+              ctx.fill()
+            }
+          } else if (cur.id === 'volcano') {
+            ctx.strokeStyle = white ? 'rgba(184, 72, 34, 0.28)' : 'rgba(226, 104, 42, 0.34)'
+            ctx.lineWidth = 1.3
+            for (const [fx, fy, len, ang] of [
+              [-390, -110, 95, 0.32],
+              [-330, 85, 82, -0.42],
+              [-160, 270, 88, 0.18],
+              [110, -260, 74, -0.28],
+            ]) {
+              ctx.beginPath()
+              ctx.moveTo(fx, fy)
+              ctx.lineTo(fx + Math.cos(ang) * len * 0.45, fy + Math.sin(ang) * len * 0.45 + 6)
+              ctx.lineTo(fx + Math.cos(ang) * len, fy + Math.sin(ang) * len - 3)
+              ctx.stroke()
+            }
+          }
+          ctx.restore()
+
+          // Continent-specific rocks
+          for (const rk of cur.rocks) {
+            if (rk.kind === 'zen') {
+              drawSketchCircle(rk.x, rk.y, rk.r + 14, rk.seed + 1, 0.18, 0.9)
+              drawSketchCircle(rk.x, rk.y, rk.r + 26, rk.seed + 2, 0.14, 0.85)
+              ctx.fillStyle = getStoneFill(cur)
+            ctx.beginPath()
+            ctx.ellipse(rk.x, rk.y, rk.r, rk.r * 0.76, 0.4, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(56, 54, 50, 0.62)'
+            ctx.lineWidth = 1.15
+            ctx.stroke()
+          } else if (rk.kind === 'sandstone') {
+            // Layered desert mesa rock
+            ctx.fillStyle = 'rgba(72, 54, 34, 0.14)'
+            ctx.beginPath()
+            ctx.ellipse(rk.x + 5, rk.y + 5, rk.r * 1.12, rk.r * 0.82, 0.18, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.fillStyle = white ? '#d6b27c' : '#9c835d'
+            ctx.beginPath()
+            ctx.ellipse(rk.x, rk.y, rk.r * 1.05, rk.r * 0.78, 0.18, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(74, 54, 34, 0.68)'
+            ctx.lineWidth = 1.2
+            ctx.stroke()
+            ctx.fillStyle = white ? '#e6c99b' : '#b29a72'
+            ctx.beginPath()
+            ctx.ellipse(rk.x - 2, rk.y - 3, rk.r * 0.68, rk.r * 0.46, 0.18, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.stroke()
+          } else if (rk.kind === 'ice') {
+            // Faceted translucent glacial ice crystal cluster
+            ctx.save()
+            ctx.translate(rk.x, rk.y)
+            ctx.fillStyle = 'rgba(42, 68, 88, 0.14)'
+            ctx.beginPath()
+            ctx.ellipse(4, 5, rk.r * 1.05, rk.r * 0.72, 0, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.beginPath()
+            for (let i = 0; i < 6; i++) {
+              const a = (i / 6) * Math.PI * 2 + 0.3
+              const rr = rk.r * (i % 2 === 0 ? 1.08 : 0.78)
+              const px = Math.cos(a) * rr
+              const py = Math.sin(a) * rr * 0.82
+              if (i === 0) ctx.moveTo(px, py)
+              else ctx.lineTo(px, py)
+            }
+            ctx.closePath()
+            ctx.fillStyle = white ? '#c4dfe9' : '#7ba0b2'
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(46, 74, 94, 0.68)'
+            ctx.lineWidth = 1.15
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.moveTo(-rk.r * 0.4, -rk.r * 0.3)
+            ctx.lineTo(rk.r * 0.2, -rk.r * 0.55)
+            ctx.lineTo(rk.r * 0.45, rk.r * 0.1)
+            ctx.closePath()
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
+            ctx.fill()
+            ctx.restore()
+          } else if (rk.kind === 'moss') {
+            // Weathered temple boulder draped in emerald moss
+            ctx.fillStyle = 'rgba(34, 46, 34, 0.15)'
+            ctx.beginPath()
+            ctx.ellipse(rk.x + 4, rk.y + 4, rk.r * 1.06, rk.r * 0.8, 0.25, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.fillStyle = white ? '#b9bfb2' : '#7e8679'
+            ctx.beginPath()
+            ctx.ellipse(rk.x, rk.y, rk.r, rk.r * 0.78, 0.25, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(44, 54, 42, 0.65)'
+            ctx.lineWidth = 1.15
+            ctx.stroke()
+            ctx.fillStyle = white ? '#6d8d5b' : '#4a653f'
+            ctx.beginPath()
+            ctx.ellipse(rk.x - 3, rk.y - 4, rk.r * 0.64, rk.r * 0.42, -0.2, 0, Math.PI * 2)
+            ctx.fill()
+          } else {
+            // Angular dark volcanic basalt rock with faint ember rim
+            ctx.save()
+            ctx.translate(rk.x, rk.y)
+            ctx.fillStyle = 'rgba(24, 18, 16, 0.22)'
+            ctx.beginPath()
+            ctx.ellipse(4, 5, rk.r * 1.06, rk.r * 0.76, 0, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.beginPath()
+            for (let i = 0; i < 6; i++) {
+              const a = (i / 6) * Math.PI * 2 + 0.2
+              const rr = rk.r * (0.85 + hash1(rk.seed + i * 5) * 0.3)
+              const px = Math.cos(a) * rr
+              const py = Math.sin(a) * rr * 0.8
+              if (i === 0) ctx.moveTo(px, py)
+              else ctx.lineTo(px, py)
+            }
+            ctx.closePath()
+            ctx.fillStyle = white ? '#5c5550' : '#3d3835'
+            ctx.fill()
+            ctx.strokeStyle = '#25211f'
+            ctx.lineWidth = 1.25
+            ctx.stroke()
+            ctx.strokeStyle = 'rgba(222, 102, 40, 0.42)'
+            ctx.lineWidth = 0.9
+            ctx.beginPath()
+            ctx.moveTo(-rk.r * 0.35, 0)
+            ctx.lineTo(rk.r * 0.32, -rk.r * 0.18)
+            ctx.stroke()
+            ctx.restore()
+          }
         }
         ctx.restore()
 
-        // 2. Realistic Sumi-e Mineral-Wash Koi Pond (East) — shares exact geometry with water collision!
+        // 2. Continent-Specific Realistic Liquid Body (Koi Pond / Oasis / Glacial Lake / Emerald Lagoon / Molten Magma)
+        // Shares exact geometry with `resolveWorldCollisions` via `getContinentLiquidBoundary`!
         ctx.save()
-        const white = isWhitePaper()
         const pondSegs = 48
-        const buildPondPath = (inset = 0) => {
+        const buildLiquidPath = (inset = 0) => {
           ctx.beginPath()
           for (let i = 0; i <= pondSegs; i++) {
             const a = (i / pondSegs) * Math.PI * 2
-            const pt = getPondBoundary(a)
-            const px = POND_CENTER.x + Math.cos(a) * Math.max(8, pt.rx - inset)
-            const py = POND_CENTER.y + Math.sin(a) * Math.max(8, pt.ry - inset)
+            const pt = getContinentLiquidBoundary(cur, a)
+            const px = liqC.x + Math.cos(a) * Math.max(8, pt.rx - inset)
+            const py = liqC.y + Math.sin(a) * Math.max(8, pt.ry - inset)
             if (i === 0) ctx.moveTo(px, py)
             else ctx.lineTo(px, py)
           }
           ctx.closePath()
         }
 
-        // 2A. Damp mossy bank & smooth river stones lining the shoreline
-        buildPondPath(-5)
-        ctx.fillStyle = white ? 'rgba(132, 138, 126, 0.24)' : 'rgba(56, 64, 62, 0.28)'
+        // 2A. Continent Shoreline Bank & Edge Stones / Crust
+        buildLiquidPath(-5)
+        ctx.fillStyle =
+          cur.liquidKind === 'magma'
+            ? white
+              ? 'rgba(72, 58, 52, 0.34)'
+              : 'rgba(34, 24, 20, 0.44)'
+            : cur.liquidKind === 'oasis'
+              ? white
+                ? 'rgba(188, 156, 104, 0.32)'
+                : 'rgba(128, 104, 68, 0.32)'
+              : cur.liquidKind === 'glacial-lake'
+                ? white
+                  ? 'rgba(218, 232, 242, 0.52)'
+                  : 'rgba(130, 152, 166, 0.35)'
+                : cur.liquidKind === 'emerald-lagoon'
+                  ? white
+                    ? 'rgba(98, 130, 94, 0.28)'
+                    : 'rgba(48, 72, 52, 0.34)'
+                  : white
+                    ? 'rgba(132, 138, 126, 0.24)'
+                    : 'rgba(56, 64, 62, 0.28)'
         ctx.fill()
 
         for (let i = 0; i < 28; i++) {
           const a = (i / 28) * Math.PI * 2 + 0.12
-          const pt = getPondBoundary(a)
-          // Skip bridge landing openings
-          if (Math.abs(pt.y) < 36) continue
-          const stoneR = 5.5 + hash1(i * 9.3 + 4) * 5.0
+          const pt = getContinentLiquidBoundary(cur, a)
+          if (Math.abs(pt.y - cur.bridge.yCenter) < 36) continue
+          const stoneR = 5.5 + hash1(i * 9.3 + cur.liquidSeedA) * 5.0
           ctx.save()
           ctx.translate(pt.x + Math.cos(a) * 2.5, pt.y + Math.sin(a) * 2.5)
           ctx.rotate(a + 0.4)
-          ctx.fillStyle = white ? '#e4dfd0' : '#9ea29c'
+          ctx.fillStyle =
+            cur.liquidKind === 'magma'
+              ? white
+                ? '#605854'
+                : '#3f3a38'
+              : cur.liquidKind === 'oasis'
+                ? white
+                  ? '#dfc89f'
+                  : '#9f8b68'
+                : cur.liquidKind === 'glacial-lake'
+                  ? white
+                    ? '#e2edf3'
+                    : '#9db4c0'
+                  : cur.liquidKind === 'emerald-lagoon'
+                    ? white
+                      ? '#b8c4ab'
+                      : '#73826d'
+                    : white
+                      ? '#e4dfd0'
+                      : '#9ea29c'
           ctx.beginPath()
           ctx.ellipse(0, 0, stoneR, stoneR * 0.68, 0, 0, Math.PI * 2)
           ctx.fill()
@@ -1676,272 +1949,447 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
 
-        // 2B. Deep mineral-wash translucent water fill (theme-connected sumi-e slate/celadon!)
-        buildPondPath(0)
-        const waterGrad = ctx.createRadialGradient(
-          POND_CENTER.x - 10,
-          POND_CENTER.y - 16,
-          14,
-          POND_CENTER.x,
-          POND_CENTER.y,
-          195
-        )
-        if (white) {
-          waterGrad.addColorStop(0, '#627e8a')
-          waterGrad.addColorStop(0.45, '#89a3ac')
-          waterGrad.addColorStop(0.82, '#b8c8c9')
-          waterGrad.addColorStop(1, '#d7e0dc')
+        // 2B. Liquid Fill Gradient per Continent
+        buildLiquidPath(0)
+        const waterGrad = ctx.createRadialGradient(liqC.x - 10, liqC.y - 16, 14, liqC.x, liqC.y, 198)
+        if (cur.liquidKind === 'oasis') {
+          if (white) {
+            waterGrad.addColorStop(0, '#3e8e9c')
+            waterGrad.addColorStop(0.48, '#6bb8be')
+            waterGrad.addColorStop(0.84, '#b0d8ce')
+            waterGrad.addColorStop(1, '#ddd7bd')
+          } else {
+            waterGrad.addColorStop(0, '#275c68')
+            waterGrad.addColorStop(0.5, '#3e7c85')
+            waterGrad.addColorStop(0.86, '#6d9b98')
+            waterGrad.addColorStop(1, '#949c88')
+          }
+        } else if (cur.liquidKind === 'glacial-lake') {
+          if (white) {
+            waterGrad.addColorStop(0, '#3a5d76')
+            waterGrad.addColorStop(0.48, '#638ba5')
+            waterGrad.addColorStop(0.84, '#a2c3d6')
+            waterGrad.addColorStop(1, '#d7e7f0')
+          } else {
+            waterGrad.addColorStop(0, '#243c4f')
+            waterGrad.addColorStop(0.5, '#3d5c72')
+            waterGrad.addColorStop(0.85, '#648396')
+            waterGrad.addColorStop(1, '#8ba3b0')
+          }
+        } else if (cur.liquidKind === 'emerald-lagoon') {
+          if (white) {
+            waterGrad.addColorStop(0, '#2c6452')
+            waterGrad.addColorStop(0.48, '#4d8a74')
+            waterGrad.addColorStop(0.84, '#88b89f')
+            waterGrad.addColorStop(1, '#c3d7c3')
+          } else {
+            waterGrad.addColorStop(0, '#1d4438')
+            waterGrad.addColorStop(0.5, '#315e4e')
+            waterGrad.addColorStop(0.85, '#547d69')
+            waterGrad.addColorStop(1, '#78927d')
+          }
+        } else if (cur.liquidKind === 'magma') {
+          waterGrad.addColorStop(0, '#f0b844')
+          waterGrad.addColorStop(0.32, '#db6a20')
+          waterGrad.addColorStop(0.72, '#a32c18')
+          waterGrad.addColorStop(1, '#4b2d24')
         } else {
-          waterGrad.addColorStop(0, '#364b54')
-          waterGrad.addColorStop(0.5, '#4d656f')
-          waterGrad.addColorStop(0.85, '#6b8085')
-          waterGrad.addColorStop(1, '#849495')
+          if (white) {
+            waterGrad.addColorStop(0, '#627e8a')
+            waterGrad.addColorStop(0.45, '#89a3ac')
+            waterGrad.addColorStop(0.82, '#b8c8c9')
+            waterGrad.addColorStop(1, '#d7e0dc')
+          } else {
+            waterGrad.addColorStop(0, '#364b54')
+            waterGrad.addColorStop(0.5, '#4d656f')
+            waterGrad.addColorStop(0.85, '#6b8085')
+            waterGrad.addColorStop(1, '#849495')
+          }
         }
         ctx.fillStyle = waterGrad
         ctx.fill()
 
-        // Clip all underwater & water-surface effects cleanly inside the pond shoreline
+        // Clip all interior liquid details cleanly inside shoreline
         ctx.save()
-        buildPondPath(0)
+        buildLiquidPath(0)
         ctx.clip()
 
-        // 2C. Inner bank recessed shadow (gives genuine sunken depth below the ground!)
-        buildPondPath(0)
-        ctx.strokeStyle = white ? 'rgba(42, 56, 62, 0.34)' : 'rgba(18, 26, 30, 0.45)'
+        // 2C. Recessed bank shadow
+        buildLiquidPath(0)
+        ctx.strokeStyle =
+          cur.liquidKind === 'magma'
+            ? 'rgba(42, 22, 18, 0.56)'
+            : white
+              ? 'rgba(42, 56, 62, 0.34)'
+              : 'rgba(18, 26, 30, 0.45)'
         ctx.lineWidth = 10
         ctx.stroke()
 
-        // 2D. Submerged riverbed stones with gentle water refraction shimmer
-        for (let i = 0; i < 18; i++) {
-          const ang = hash1(i * 11.7 + 3) * Math.PI * 2
-          const distFrac = 0.25 + hash1(i * 5.3 + 17) * 0.62
-          const bp = getPondBoundary(ang)
-          const wobX = Math.sin(time * 1.4 + i) * 0.9
-          const wobY = Math.cos(time * 1.1 + i * 1.7) * 0.7
-          const sx = POND_CENTER.x + Math.cos(ang) * bp.rx * distFrac + wobX
-          const sy = POND_CENTER.y + Math.sin(ang) * bp.ry * distFrac + wobY
-          const sr = 6 + hash1(i * 7.1) * 9
-          ctx.fillStyle = white ? 'rgba(54, 72, 78, 0.16)' : 'rgba(22, 34, 38, 0.22)'
-          ctx.beginPath()
-          ctx.ellipse(sx, sy, sr, sr * 0.7, ang, 0, Math.PI * 2)
-          ctx.fill()
-        }
-
-        // 2E. Articulated Swimming Japanese Koi Fish beneath the water surface!
-        const koiSpecs = [
-          { cx: 344, cy: -88, rx: 46, ry: 34, spd: 0.42, ph: 0.2, body: '#f5f0e4', spot: '#c44634', sz: 1.05 },
-          { cx: 356, cy: 96, rx: 48, ry: 38, spd: -0.36, ph: 2.1, body: '#e6b44c', spot: '#f5f0e4', sz: 0.98 },
-          { cx: 326, cy: 48, rx: 32, ry: 28, spd: 0.52, ph: 4.0, body: '#f5f0e4', spot: '#2c2f36', sz: 0.86 },
-          { cx: 374, cy: -42, rx: 30, ry: 26, spd: -0.46, ph: 5.1, body: '#c44634', spot: '#f5f0e4', sz: 0.84 },
-        ]
-        for (const k of koiSpecs) {
-          const t0 = time * k.spd + k.ph
-          const tNext = t0 + 0.06 * Math.sign(k.spd)
-          const kx = k.cx + Math.cos(t0) * k.rx
-          const ky = k.cy + Math.sin(t0 * 1.5) * k.ry
-          const nx = k.cx + Math.cos(tNext) * k.rx
-          const ny = k.cy + Math.sin(tNext * 1.5) * k.ry
-          const kAng = Math.atan2(ny - ky, nx - kx)
-          const tailWag = Math.sin(time * 6.5 + k.ph * 3)
-
-          ctx.save()
-          ctx.translate(kx, ky)
-          ctx.rotate(kAng)
-          ctx.scale(k.sz, k.sz)
-
-          // Soft deep underwater koi shadow
-          ctx.fillStyle = 'rgba(20, 32, 38, 0.22)'
-          ctx.beginPath()
-          ctx.ellipse(-2, 5.5, 11.5, 3.8, 0, 0, Math.PI * 2)
-          ctx.fill()
-
-          // Fluttering translucent pectoral fins
-          ctx.fillStyle = 'rgba(248, 244, 234, 0.55)'
-          ctx.beginPath()
-          ctx.ellipse(2, -4.6, 4.4, 2.0, -0.5 + tailWag * 0.14, 0, Math.PI * 2)
-          ctx.ellipse(2, 4.6, 4.4, 2.0, 0.5 - tailWag * 0.14, 0, Math.PI * 2)
-          ctx.fill()
-
-          // Graceful undulating tail fin
-          ctx.beginPath()
-          ctx.moveTo(-8.5, 0)
-          ctx.quadraticCurveTo(-13.5, -3.5 + tailWag * 3.2, -17.5, -4.2 + tailWag * 4.5)
-          ctx.quadraticCurveTo(-14.5, tailWag * 2.5, -17.5, 4.2 + tailWag * 4.5)
-          ctx.quadraticCurveTo(-13.5, 3.5 + tailWag * 3.2, -8.5, 0)
-          ctx.fillStyle = 'rgba(245, 240, 228, 0.72)'
-          ctx.fill()
-
-          // Streamlined koi body
-          ctx.beginPath()
-          ctx.moveTo(9.5, 0)
-          ctx.quadraticCurveTo(4.5, -4.4, -3.5, -2.5 + tailWag * 0.7)
-          ctx.lineTo(-9.5, tailWag * 1.6)
-          ctx.lineTo(-3.5, 2.5 + tailWag * 0.7)
-          ctx.quadraticCurveTo(4.5, 4.4, 9.5, 0)
-          ctx.closePath()
-          ctx.fillStyle = k.body
-          ctx.fill()
-
-          // Authentic koi dorsal pattern spot
-          ctx.fillStyle = k.spot
-          ctx.beginPath()
-          ctx.ellipse(2.5, 0, 4.2, 2.3, 0.1, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.beginPath()
-          ctx.arc(-3.5, 0.4 + tailWag * 0.4, 1.8, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.restore()
-        }
-
-        // Translucent surface water glaze over fish & pebbles for realistic submersion
-        ctx.fillStyle = white ? 'rgba(148, 174, 182, 0.22)' : 'rgba(46, 68, 76, 0.28)'
-        ctx.fillRect(POND_CENTER.x - 160, POND_CENTER.y - 220, 320, 440)
-
-        // 2F. Soft rippled reflection of the Wooden Bridge cast onto the water!
-        ctx.save()
-        for (let ry = -28; ry <= 48; ry += 6) {
-          const waveShift = Math.sin(time * 2.4 + ry * 0.18) * 3.5
-          ctx.fillStyle = white ? 'rgba(48, 56, 58, 0.11)' : 'rgba(18, 24, 28, 0.18)'
-          ctx.fillRect(246 + waveShift, ry, 208, 4)
-        }
-        ctx.restore()
-
-        // 2G. Drifting sunlight caustic bands & surface sheen ripples
-        ctx.save()
-        for (let i = 0; i < 14; i++) {
-          const bandY = -165 + i * 26 + Math.sin(time * 0.8 + i) * 4
-          const bandX = POND_CENTER.x + Math.sin(time * 0.65 + i * 1.9) * 32
-          const halfLen = 22 + hash1(i * 4.3) * 36
-          const shimmer = 0.12 + 0.10 * Math.sin(time * 1.9 + i * 2.3)
-          ctx.strokeStyle = white
-            ? `rgba(255, 253, 246, ${shimmer * 1.65})`
-            : `rgba(220, 232, 234, ${shimmer})`
-          ctx.lineWidth = 1.4
-          ctx.lineCap = 'round'
-          ctx.beginPath()
-          ctx.moveTo(bandX - halfLen, bandY)
-          ctx.quadraticCurveTo(
-            bandX,
-            bandY + Math.sin(time * 2.1 + i) * 3.2,
-            bandX + halfLen,
-            bandY
-          )
-          ctx.stroke()
-        }
-
-        // Gentle lapping shoreline water highlight meniscus
-        const lapInset = 4.2 + Math.sin(time * 1.8) * 1.4
-        buildPondPath(lapInset)
-        ctx.strokeStyle = white ? 'rgba(255, 253, 248, 0.34)' : 'rgba(210, 224, 226, 0.20)'
-        ctx.lineWidth = 1.1
-        ctx.setLineDash([14, 10, 6, 12])
-        ctx.lineDashOffset = -time * 6
-        ctx.stroke()
-        ctx.setLineDash([])
-        ctx.restore()
-
-        // 2H. Dual-ring concentric surface water ripples
-        for (const [wx, wy, phase] of [
-          [332, -92, 0],
-          [372, 92, 1.7],
-          [314, 52, 3.2],
-          [364, -46, 4.6],
-        ]) {
-          const cyc = (time * 0.42 + phase) % 1
-          const r1 = 5 + cyc * 26
-          const r2 = Math.max(2, r1 - 6.5)
-          const a1 = (1 - cyc) * (white ? 0.42 : 0.28)
-          ctx.strokeStyle = white ? `rgba(255, 253, 246, ${a1})` : `rgba(205, 220, 224, ${a1})`
-          ctx.lineWidth = 1.0
-          ctx.beginPath()
-          ctx.ellipse(wx, wy, r1, r1 * 0.72, 0, 0, Math.PI * 2)
-          ctx.stroke()
-          if (cyc > 0.18) {
-            ctx.strokeStyle = `rgba(48, 62, 68, ${a1 * 0.45})`
-            ctx.lineWidth = 0.75
+        if (cur.liquidKind === 'magma') {
+          // Molten Lava Flow Veins, Cooling Basalt Slag Rafts & Bubbling Magma Rings!
+          for (let i = 0; i < 12; i++) {
+            const bandY = liqC.y - 155 + i * 28 + Math.sin(time * 0.9 + i) * 5
+            const bandX = liqC.x + Math.sin(time * 0.55 + i * 1.6) * 26
+            const halfLen = 28 + hash1(i * 4.7) * 42
+            const pulse = 0.45 + 0.25 * Math.sin(time * 2.4 + i * 1.9)
+            ctx.strokeStyle = `rgba(255, 220, 112, ${pulse})`
+            ctx.lineWidth = 2.4
+            ctx.lineCap = 'round'
             ctx.beginPath()
-            ctx.ellipse(wx, wy, r2, r2 * 0.72, 0, 0, Math.PI * 2)
+            ctx.moveTo(bandX - halfLen, bandY)
+            ctx.quadraticCurveTo(bandX, bandY + Math.sin(time * 1.8 + i) * 7, bandX + halfLen, bandY)
             ctx.stroke()
           }
-        }
-
-        // 2I. Floating Sage-Wash Lily Pads with Underwater Shadows & Delicate Lotus Blossoms
-        const lilyPads: [number, number, number, number, boolean][] = [
-          [388, -72, 14, 0.5, true],
-          [369, -54, 10, 2.2, false],
-          [318, 108, 15, -0.8, true],
-          [301, 94, 9.5, 1.4, false],
-          [386, 118, 11.5, -2.1, false],
-        ]
-        for (const [lx, ly, lr, ang, hasLotus] of lilyPads) {
-          const driftX = Math.sin(time * 0.9 + lx * 0.05) * 1.2
-          const driftY = Math.cos(time * 0.7 + ly * 0.05) * 0.9
-          const px = lx + driftX
-          const py = ly + driftY
-
-          // Soft underwater shadow beneath lily pad
-          ctx.fillStyle = 'rgba(24, 36, 40, 0.22)'
-          ctx.beginPath()
-          ctx.ellipse(px + 2.5, py + 4.2, lr * 0.98, lr * 0.84, 0, 0, Math.PI * 2)
-          ctx.fill()
-
-          // Notched lily pad leaf
-          ctx.beginPath()
-          ctx.arc(px, py, lr, ang + 0.28, ang + Math.PI * 2 - 0.28)
-          ctx.lineTo(px, py)
-          ctx.closePath()
-          ctx.fillStyle = white ? '#a4b596' : '#73826d'
-          ctx.fill()
-          ctx.strokeStyle = 'rgba(46, 56, 44, 0.55)'
-          ctx.lineWidth = 0.95
-          ctx.stroke()
-
-          // Delicate radial leaf veins
-          ctx.strokeStyle = 'rgba(246, 243, 234, 0.30)'
-          ctx.lineWidth = 0.65
-          ctx.beginPath()
-          for (let v = 0; v < 5; v++) {
-            const va = ang + 0.85 + v * 1.05
-            ctx.moveTo(px, py)
-            ctx.lineTo(px + Math.cos(va) * lr * 0.78, py + Math.sin(va) * lr * 0.78)
-          }
-          ctx.stroke()
-
-          // Delicate pale-ivory & blush Japanese Lotus Blossom
-          if (hasLotus) {
+          // Cooling dark basalt crust chunks floating slowly on lava
+          for (const [cxOff, cyOff, rx, ry, rot] of [
+            [-36, -92, 22, 14, 0.4],
+            [32, 98, 26, 15, -0.3],
+            [-28, 64, 17, 11, 0.7],
+            [40, -56, 19, 12, -0.5],
+          ]) {
+            const dx = Math.sin(time * 0.4 + cyOff) * 2.4
+            const dy = Math.cos(time * 0.35 + cxOff) * 1.8
             ctx.save()
-            ctx.translate(px - 1, py - 1)
-            for (let p = 0; p < 6; p++) {
+            ctx.translate(liqC.x + cxOff + dx, liqC.y + cyOff + dy)
+            ctx.rotate(rot)
+            ctx.fillStyle = '#3d332e'
+            ctx.beginPath()
+            ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(244, 148, 52, 0.55)'
+            ctx.lineWidth = 1.2
+            ctx.stroke()
+            ctx.restore()
+          }
+          // Bubbling molten vents
+          for (const [bxOff, byOff, ph] of [
+            [-14, -74, 0.2],
+            [18, 72, 1.4],
+            [-22, 112, 2.7],
+            [24, -108, 4.1],
+          ]) {
+            const cyc = (time * 0.65 + ph) % 1
+            const r = 3 + cyc * 14
+            ctx.strokeStyle = `rgba(255, 226, 132, ${(1 - cyc) * 0.78})`
+            ctx.lineWidth = 1.6
+            ctx.beginPath()
+            ctx.arc(liqC.x + bxOff, liqC.y + byOff, r, 0, Math.PI * 2)
+            ctx.stroke()
+          }
+        } else {
+          // 2D. Submerged riverbed stones with water refraction shimmer
+          for (let i = 0; i < 16; i++) {
+            const ang = hash1(i * 11.7 + cur.liquidSeedA) * Math.PI * 2
+            const distFrac = 0.25 + hash1(i * 5.3 + cur.liquidSeedB) * 0.62
+            const bp = getContinentLiquidBoundary(cur, ang)
+            const wobX = Math.sin(time * 1.4 + i) * 0.9
+            const wobY = Math.cos(time * 1.1 + i * 1.7) * 0.7
+            const sx = liqC.x + Math.cos(ang) * bp.rx * distFrac + wobX
+            const sy = liqC.y + Math.sin(ang) * bp.ry * distFrac + wobY
+            const sr = 6 + hash1(i * 7.1) * 9
+            ctx.fillStyle = white ? 'rgba(54, 72, 78, 0.16)' : 'rgba(22, 34, 38, 0.22)'
+            ctx.beginPath()
+            ctx.ellipse(sx, sy, sr, sr * 0.7, ang, 0, Math.PI * 2)
+            ctx.fill()
+          }
+
+          // 2E. Continent Water Life / Ice Floes
+          if (cur.liquidKind === 'glacial-lake') {
+            // Drifting geometric arctic ice floes!
+            const floes: [number, number, number, number, number][] = [
+              [-32, -88, 28, 18, 0.28],
+              [28, -56, 22, 15, -0.4],
+              [-26, 92, 30, 19, -0.2],
+              [34, 114, 24, 16, 0.45],
+              [4, -124, 20, 13, 0.1],
+            ]
+            for (const [fx, fy, frx, fry, rot] of floes) {
+              const driftX = Math.sin(time * 0.45 + fy * 0.04) * 3.0
+              const driftY = Math.cos(time * 0.38 + fx * 0.04) * 2.2
               ctx.save()
-              ctx.rotate((p / 6) * Math.PI * 2 + time * 0.06)
-              ctx.fillStyle = p % 2 === 0 ? '#faf4ec' : '#f1d6cf'
+              ctx.translate(liqC.x + fx + driftX, liqC.y + fy + driftY)
+              ctx.rotate(rot + Math.sin(time * 0.3 + fx) * 0.04)
+              // Underwater ice shelf edge
+              ctx.fillStyle = 'rgba(138, 192, 214, 0.38)'
               ctx.beginPath()
-              ctx.ellipse(3.6, 0, 4.2, 1.8, 0, 0, Math.PI * 2)
+              ctx.ellipse(2, 4, frx * 1.06, fry * 1.06, 0, 0, Math.PI * 2)
               ctx.fill()
-              ctx.strokeStyle = 'rgba(138, 72, 66, 0.42)'
-              ctx.lineWidth = 0.55
+              // Crisp faceted white snow/ice slab
+              ctx.beginPath()
+              ctx.moveTo(-frx, -fry * 0.3)
+              ctx.lineTo(-frx * 0.3, -fry)
+              ctx.lineTo(frx * 0.85, -fry * 0.65)
+              ctx.lineTo(frx, fry * 0.4)
+              ctx.lineTo(frx * 0.15, fry)
+              ctx.lineTo(-frx * 0.85, fry * 0.55)
+              ctx.closePath()
+              ctx.fillStyle = white ? '#f1f7fa' : '#c6dae4'
+              ctx.fill()
+              ctx.strokeStyle = 'rgba(66, 98, 118, 0.58)'
+              ctx.lineWidth = 1.0
               ctx.stroke()
               ctx.restore()
             }
-            ctx.fillStyle = '#e5be62'
+          } else {
+            // Articulated Swimming Fish (Koi in Kyoto, Golden Desert Carp in Oasis, Jade/Gold Koi in Lagoon!)
+            const fishSpecs =
+              cur.liquidKind === 'oasis'
+                ? [
+                    { cx: liqC.x - 10, cy: liqC.y - 78, rx: 42, ry: 30, spd: 0.48, ph: 0.4, body: '#f5d27a', spot: '#d46b2c', sz: 0.96 },
+                    { cx: liqC.x + 12, cy: liqC.y + 82, rx: 44, ry: 34, spd: -0.4, ph: 2.3, body: '#faf4e6', spot: '#e2a43c', sz: 0.9 },
+                    { cx: liqC.x - 20, cy: liqC.y + 42, rx: 28, ry: 24, spd: 0.54, ph: 4.1, body: '#e8b64c', spot: '#faf4e6', sz: 0.82 },
+                  ]
+                : cur.liquidKind === 'emerald-lagoon'
+                  ? [
+                      { cx: liqC.x - 6, cy: liqC.y - 86, rx: 44, ry: 34, spd: 0.42, ph: 0.5, body: '#e8bd54', spot: '#faf5e8', sz: 1.02 },
+                      { cx: liqC.x + 8, cy: liqC.y + 92, rx: 46, ry: 36, spd: -0.38, ph: 2.2, body: '#faf4e8', spot: '#cf533e', sz: 0.96 },
+                      { cx: liqC.x - 24, cy: liqC.y + 48, rx: 32, ry: 26, spd: 0.5, ph: 4.3, body: '#a8d4b8', spot: '#2e5948', sz: 0.88 },
+                    ]
+                  : [
+                      { cx: liqC.x - 6, cy: liqC.y - 88, rx: 46, ry: 34, spd: 0.42, ph: 0.2, body: '#f5f0e4', spot: '#c44634', sz: 1.05 },
+                      { cx: liqC.x + 6, cy: liqC.y + 96, rx: 48, ry: 38, spd: -0.36, ph: 2.1, body: '#e6b44c', spot: '#f5f0e4', sz: 0.98 },
+                      { cx: liqC.x - 24, cy: liqC.y + 48, rx: 32, ry: 28, spd: 0.52, ph: 4.0, body: '#f5f0e4', spot: '#2c2f36', sz: 0.86 },
+                      { cx: liqC.x + 24, cy: liqC.y - 42, rx: 30, ry: 26, spd: -0.46, ph: 5.1, body: '#c44634', spot: '#f5f0e4', sz: 0.84 },
+                    ]
+            for (const k of fishSpecs) {
+              const t0 = time * k.spd + k.ph
+              const tNext = t0 + 0.06 * Math.sign(k.spd)
+              const kx = k.cx + Math.cos(t0) * k.rx
+              const ky = k.cy + Math.sin(t0 * 1.5) * k.ry
+              const nx = k.cx + Math.cos(tNext) * k.rx
+              const ny = k.cy + Math.sin(tNext * 1.5) * k.ry
+              const kAng = Math.atan2(ny - ky, nx - kx)
+              const tailWag = Math.sin(time * 6.5 + k.ph * 3)
+
+              ctx.save()
+              ctx.translate(kx, ky)
+              ctx.rotate(kAng)
+              ctx.scale(k.sz, k.sz)
+
+              ctx.fillStyle = 'rgba(20, 32, 38, 0.22)'
+              ctx.beginPath()
+              ctx.ellipse(-2, 5.5, 11.5, 3.8, 0, 0, Math.PI * 2)
+              ctx.fill()
+
+              ctx.fillStyle = 'rgba(248, 244, 234, 0.55)'
+              ctx.beginPath()
+              ctx.ellipse(2, -4.6, 4.4, 2.0, -0.5 + tailWag * 0.14, 0, Math.PI * 2)
+              ctx.ellipse(2, 4.6, 4.4, 2.0, 0.5 - tailWag * 0.14, 0, Math.PI * 2)
+              ctx.fill()
+
+              ctx.beginPath()
+              ctx.moveTo(-8.5, 0)
+              ctx.quadraticCurveTo(-13.5, -3.5 + tailWag * 3.2, -17.5, -4.2 + tailWag * 4.5)
+              ctx.quadraticCurveTo(-14.5, tailWag * 2.5, -17.5, 4.2 + tailWag * 4.5)
+              ctx.quadraticCurveTo(-13.5, 3.5 + tailWag * 3.2, -8.5, 0)
+              ctx.fillStyle = 'rgba(245, 240, 228, 0.72)'
+              ctx.fill()
+
+              ctx.beginPath()
+              ctx.moveTo(9.5, 0)
+              ctx.quadraticCurveTo(4.5, -4.4, -3.5, -2.5 + tailWag * 0.7)
+              ctx.lineTo(-9.5, tailWag * 1.6)
+              ctx.lineTo(-3.5, 2.5 + tailWag * 0.7)
+              ctx.quadraticCurveTo(4.5, 4.4, 9.5, 0)
+              ctx.closePath()
+              ctx.fillStyle = k.body
+              ctx.fill()
+
+              ctx.fillStyle = k.spot
+              ctx.beginPath()
+              ctx.ellipse(2.5, 0, 4.2, 2.3, 0.1, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.beginPath()
+              ctx.arc(-3.5, 0.4 + tailWag * 0.4, 1.8, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.restore()
+            }
+          }
+
+          // Translucent surface water glaze for submersion depth
+          ctx.fillStyle =
+            cur.liquidKind === 'oasis'
+              ? white
+                ? 'rgba(124, 198, 202, 0.18)'
+                : 'rgba(42, 92, 98, 0.24)'
+              : cur.liquidKind === 'emerald-lagoon'
+                ? white
+                  ? 'rgba(104, 168, 140, 0.20)'
+                  : 'rgba(34, 72, 58, 0.26)'
+                : white
+                  ? 'rgba(148, 174, 182, 0.22)'
+                  : 'rgba(46, 68, 76, 0.28)'
+          ctx.fillRect(liqC.x - 165, liqC.y - 225, 330, 450)
+
+          // 2F. Soft rippled reflection of the Bridge cast onto the water
+          ctx.save()
+          const br = cur.bridge
+          for (let ry = br.yCenter - 28; ry <= br.yCenter + 48; ry += 6) {
+            const waveShift = Math.sin(time * 2.4 + ry * 0.18) * 3.5
+            ctx.fillStyle = white ? 'rgba(48, 56, 58, 0.11)' : 'rgba(18, 24, 28, 0.18)'
+            ctx.fillRect(br.minX + 6 + waveShift, ry, br.maxX - br.minX - 12, 4)
+          }
+          ctx.restore()
+
+          // 2G. Drifting sunlight caustic bands & shoreline meniscus
+          ctx.save()
+          for (let i = 0; i < 14; i++) {
+            const bandY = liqC.y - 165 + i * 26 + Math.sin(time * 0.8 + i) * 4
+            const bandX = liqC.x + Math.sin(time * 0.65 + i * 1.9) * 32
+            const halfLen = 22 + hash1(i * 4.3) * 36
+            const shimmer = 0.12 + 0.10 * Math.sin(time * 1.9 + i * 2.3)
+            ctx.strokeStyle = white
+              ? `rgba(255, 253, 246, ${shimmer * 1.65})`
+              : `rgba(220, 232, 234, ${shimmer})`
+            ctx.lineWidth = 1.4
+            ctx.lineCap = 'round'
             ctx.beginPath()
-            ctx.arc(0, 0, 2.0, 0, Math.PI * 2)
-            ctx.fill()
-            ctx.restore()
+            ctx.moveTo(bandX - halfLen, bandY)
+            ctx.quadraticCurveTo(bandX, bandY + Math.sin(time * 2.1 + i) * 3.2, bandX + halfLen, bandY)
+            ctx.stroke()
+          }
+
+          const lapInset = 4.2 + Math.sin(time * 1.8) * 1.4
+          buildLiquidPath(lapInset)
+          ctx.strokeStyle = white ? 'rgba(255, 253, 248, 0.34)' : 'rgba(210, 224, 226, 0.20)'
+          ctx.lineWidth = 1.1
+          ctx.setLineDash([14, 10, 6, 12])
+          ctx.lineDashOffset = -time * 6
+          ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+
+          // 2H. Concentric surface water ripples
+          for (const [rxOff, ryOff, phase] of [
+            [-18, -92, 0],
+            [22, 92, 1.7],
+            [-36, 52, 3.2],
+            [14, -46, 4.6],
+          ]) {
+            const cyc = (time * 0.42 + phase) % 1
+            const r1 = 5 + cyc * 26
+            const r2 = Math.max(2, r1 - 6.5)
+            const a1 = (1 - cyc) * (white ? 0.42 : 0.28)
+            ctx.strokeStyle = white ? `rgba(255, 253, 246, ${a1})` : `rgba(205, 220, 224, ${a1})`
+            ctx.lineWidth = 1.0
+            ctx.beginPath()
+            ctx.ellipse(liqC.x + rxOff, liqC.y + ryOff, r1, r1 * 0.72, 0, 0, Math.PI * 2)
+            ctx.stroke()
+            if (cyc > 0.18) {
+              ctx.strokeStyle = `rgba(48, 62, 68, ${a1 * 0.45})`
+              ctx.lineWidth = 0.75
+              ctx.beginPath()
+              ctx.ellipse(liqC.x + rxOff, liqC.y + ryOff, r2, r2 * 0.72, 0, 0, Math.PI * 2)
+              ctx.stroke()
+            }
+          }
+
+          // 2I. Floating Lily Pads & Lotus Blossoms (Kyoto, Oasis & Emerald Lagoon)
+          if (cur.liquidKind !== 'glacial-lake') {
+            const lilyPads: [number, number, number, number, boolean][] =
+              cur.liquidKind === 'emerald-lagoon'
+                ? [
+                    [liqC.x + 36, liqC.y - 76, 16, 0.5, true],
+                    [liqC.x + 16, liqC.y - 54, 12, 2.2, false],
+                    [liqC.x - 32, liqC.y + 104, 17, -0.8, true],
+                    [liqC.x - 48, liqC.y + 88, 11, 1.4, false],
+                    [liqC.x + 36, liqC.y + 112, 14, -2.1, true],
+                    [liqC.x - 28, liqC.y - 98, 13, 0.9, false],
+                  ]
+                : cur.liquidKind === 'oasis'
+                  ? [
+                      [liqC.x + 34, liqC.y - 68, 12, 0.6, true],
+                      [liqC.x - 30, liqC.y + 94, 13, -0.7, true],
+                      [liqC.x + 32, liqC.y + 102, 10, -2.0, false],
+                    ]
+                  : [
+                      [liqC.x + 38, liqC.y - 72, 14, 0.5, true],
+                      [liqC.x + 19, liqC.y - 54, 10, 2.2, false],
+                      [liqC.x - 32, liqC.y + 108, 15, -0.8, true],
+                      [liqC.x - 49, liqC.y + 94, 9.5, 1.4, false],
+                      [liqC.x + 36, liqC.y + 118, 11.5, -2.1, false],
+                    ]
+            for (const [lx, ly, lr, ang, hasLotus] of lilyPads) {
+              const driftX = Math.sin(time * 0.9 + lx * 0.05) * 1.2
+              const driftY = Math.cos(time * 0.7 + ly * 0.05) * 0.9
+              const px = lx + driftX
+              const py = ly + driftY
+
+              ctx.fillStyle = 'rgba(24, 36, 40, 0.22)'
+              ctx.beginPath()
+              ctx.ellipse(px + 2.5, py + 4.2, lr * 0.98, lr * 0.84, 0, 0, Math.PI * 2)
+              ctx.fill()
+
+              ctx.beginPath()
+              ctx.arc(px, py, lr, ang + 0.28, ang + Math.PI * 2 - 0.28)
+              ctx.lineTo(px, py)
+              ctx.closePath()
+              ctx.fillStyle =
+                cur.liquidKind === 'emerald-lagoon'
+                  ? white
+                    ? '#7ea674'
+                    : '#52734e'
+                  : white
+                    ? '#a4b596'
+                    : '#73826d'
+              ctx.fill()
+              ctx.strokeStyle = 'rgba(46, 56, 44, 0.55)'
+              ctx.lineWidth = 0.95
+              ctx.stroke()
+
+              ctx.strokeStyle = 'rgba(246, 243, 234, 0.30)'
+              ctx.lineWidth = 0.65
+              ctx.beginPath()
+              for (let v = 0; v < 5; v++) {
+                const va = ang + 0.85 + v * 1.05
+                ctx.moveTo(px, py)
+                ctx.lineTo(px + Math.cos(va) * lr * 0.78, py + Math.sin(va) * lr * 0.78)
+              }
+              ctx.stroke()
+
+              if (hasLotus) {
+                ctx.save()
+                ctx.translate(px - 1, py - 1)
+                for (let p = 0; p < 6; p++) {
+                  ctx.save()
+                  ctx.rotate((p / 6) * Math.PI * 2 + time * 0.06)
+                  ctx.fillStyle =
+                    cur.liquidKind === 'emerald-lagoon'
+                      ? p % 2 === 0
+                        ? '#f8e6ea'
+                        : '#e8a8b4'
+                      : p % 2 === 0
+                        ? '#faf4ec'
+                        : '#f1d6cf'
+                  ctx.beginPath()
+                  ctx.ellipse(3.6, 0, 4.2, 1.8, 0, 0, Math.PI * 2)
+                  ctx.fill()
+                  ctx.strokeStyle = 'rgba(138, 72, 66, 0.42)'
+                  ctx.lineWidth = 0.55
+                  ctx.stroke()
+                  ctx.restore()
+                }
+                ctx.fillStyle = '#e5be62'
+                ctx.beginPath()
+                ctx.arc(0, 0, 2.0, 0, Math.PI * 2)
+                ctx.fill()
+                ctx.restore()
+              }
+            }
           }
         }
 
-        ctx.restore() // end pond clip
+        ctx.restore() // end liquid clip
 
         // Crisp sumi-e ink outline framing the organic shoreline
-        buildPondPath(0)
-        ctx.strokeStyle = 'rgba(54, 53, 50, 0.56)'
+        buildLiquidPath(0)
+        ctx.strokeStyle = cur.liquidKind === 'magma' ? 'rgba(54, 34, 28, 0.78)' : 'rgba(54, 53, 50, 0.56)'
         ctx.lineWidth = 1.35
         ctx.stroke()
         ctx.restore()
 
         // 3. Stepping Stones & Central Courtyard
-        for (const st of STEPPING_STONES) {
+        for (const st of cur.stones) {
           ctx.save()
           ctx.translate(st.x, st.y)
           ctx.rotate(st.rot)
@@ -1949,7 +2397,7 @@ export default function Samurai2DPlatformer() {
           ctx.beginPath()
           ctx.roundRect(-st.w * 0.5 + 2.5, -st.h * 0.5 + 3, st.w, st.h, 6)
           ctx.fill()
-          ctx.fillStyle = getStoneFill()
+          ctx.fillStyle = getStoneFill(cur)
           ctx.beginPath()
           ctx.roundRect(-st.w * 0.5, -st.h * 0.5, st.w, st.h, 5)
           ctx.fill()
@@ -1959,50 +2407,89 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
 
-        drawSketchCircle(0, 0, 26, 5, 0.26, 1.0)
-        drawSketchCircle(0, 0, 82, 9, 0.22, 0.95)
+        drawSketchCircle(cur.origin.x, cur.origin.y, 26, 5, 0.26, 1.0)
+        drawSketchCircle(cur.origin.x, cur.origin.y, 82, 9, 0.22, 0.95)
 
-        // 4. Wooden Bridge over Koi Pond
+        // 4. Continent-Themed Bridge over Liquid Body
         ctx.save()
-        ctx.fillStyle = 'rgba(34, 34, 38, 0.12)'
+        const br = cur.bridge
+        const bx0 = br.minX + 4
+        const bw = br.maxX - br.minX - 8
+        const by = br.yCenter
+        ctx.fillStyle = 'rgba(34, 34, 38, 0.14)'
         ctx.beginPath()
-        ctx.roundRect(244, -24, 214, 62, 4)
+        ctx.roundRect(bx0 + 2, by - 24, bw, 62, 4)
         ctx.fill()
-        ctx.fillStyle = getWoodFill()
+
+        const deckColor =
+          br.style === 'obsidian'
+            ? white
+              ? '#5d5753'
+              : '#3e3a38'
+            : br.style === 'sandstone'
+              ? white
+                ? '#e2cba2'
+                : '#a89674'
+              : br.style === 'bamboo'
+                ? white
+                  ? '#cfd4ad'
+                  : '#8f9678'
+                : getWoodFill(cur)
+        ctx.fillStyle = deckColor
         ctx.beginPath()
-        ctx.roundRect(242, -32, 216, 64, 3)
+        ctx.roundRect(bx0, by - 32, bw, 64, 3)
         ctx.fill()
-        ctx.strokeStyle = 'rgba(54, 53, 50, 0.62)'
+        ctx.strokeStyle = 'rgba(54, 53, 50, 0.68)'
         ctx.lineWidth = 1.25
         ctx.stroke()
+
+        // Deck plank / slab lines
         ctx.beginPath()
-        for (let px = 256; px < 454; px += 14) {
-          ctx.moveTo(px, -31)
-          ctx.lineTo(px, 31)
+        const plankStep = br.style === 'sandstone' || br.style === 'obsidian' ? 22 : br.style === 'bamboo' ? 10 : 14
+        for (let px = bx0 + plankStep; px < bx0 + bw - 4; px += plankStep) {
+          ctx.moveTo(px, by - 31)
+          ctx.lineTo(px, by + 31)
         }
-        ctx.strokeStyle = 'rgba(54, 53, 50, 0.32)'
+        ctx.strokeStyle = br.style === 'obsidian' ? 'rgba(222, 108, 46, 0.28)' : 'rgba(54, 53, 50, 0.32)'
         ctx.lineWidth = 0.9
         ctx.stroke()
-        ctx.fillStyle = getStoneFill()
-        ctx.fillRect(240, -35, 220, 6)
-        ctx.fillRect(240, 29, 220, 6)
-        ctx.strokeStyle = 'rgba(54, 53, 50, 0.7)'
+
+        // Bridge railings
+        const railColor =
+          br.style === 'frost'
+            ? white
+              ? '#f4f9fc'
+              : '#cbd9e2'
+            : br.style === 'obsidian'
+              ? white
+                ? '#453f3c'
+                : '#2d2927'
+              : br.style === 'bamboo'
+                ? white
+                  ? '#9aa878'
+                  : '#6d7a58'
+                : getStoneFill(cur)
+        ctx.fillStyle = railColor
+        ctx.fillRect(bx0 - 2, by - 35, bw + 4, 6)
+        ctx.fillRect(bx0 - 2, by + 29, bw + 4, 6)
+        ctx.strokeStyle = 'rgba(54, 53, 50, 0.72)'
         ctx.lineWidth = 1.1
-        ctx.strokeRect(240, -35, 220, 6)
-        ctx.strokeRect(240, 29, 220, 6)
-        for (const postX of [244, 316, 384, 454]) {
-          for (const postY of [-32, 32]) {
+        ctx.strokeRect(bx0 - 2, by - 35, bw + 4, 6)
+        ctx.strokeRect(bx0 - 2, by + 29, bw + 4, 6)
+        for (let pIdx = 0; pIdx < 4; pIdx++) {
+          const postX = bx0 + 4 + (pIdx / 3) * (bw - 8)
+          for (const postY of [by - 32, by + 32]) {
             ctx.beginPath()
             ctx.arc(postX, postY, 4.5, 0, Math.PI * 2)
-            ctx.fillStyle = getStoneFill()
+            ctx.fillStyle = br.style === 'obsidian' ? '#c9532b' : railColor
             ctx.fill()
             ctx.stroke()
           }
         }
         ctx.restore()
 
-        // 5. Stone Lanterns
-        for (const ln of LANTERNS) {
+        // 5. Stone / Regional Lanterns
+        for (const ln of cur.lanterns) {
           ctx.save()
           ctx.translate(ln.x, ln.y)
           ctx.fillStyle = 'rgba(42, 40, 36, 0.10)'
@@ -2018,37 +2505,67 @@ export default function Samurai2DPlatformer() {
             else ctx.lineTo(px, py)
           }
           ctx.closePath()
-          ctx.fillStyle = getStoneFill()
+          ctx.fillStyle = cur.id === 'volcano' ? (white ? '#5d5550' : '#3d3835') : getStoneFill(cur)
           ctx.fill()
           ctx.strokeStyle = 'rgba(56, 54, 50, 0.62)'
           ctx.lineWidth = 1.05
           ctx.stroke()
           ctx.beginPath()
           ctx.arc(0, 0, 3.2, 0, Math.PI * 2)
+          if (cur.id === 'volcano') {
+            ctx.fillStyle = '#e87c34'
+            ctx.fill()
+          } else if (cur.id === 'frost') {
+            ctx.fillStyle = '#e8f4fa'
+            ctx.fill()
+          }
           ctx.stroke()
           ctx.restore()
         }
 
-        // 6. North Torii Gate Shadow & Realistic 2.5D Tree Trunks, Roots & Bamboo Culms
+        // 6. North Gate Shadow & Realistic 2.5D Flora Trunks (All 8 Botanical Species!)
         ctx.save()
         ctx.fillStyle = 'rgba(42, 40, 36, 0.10)'
         ctx.beginPath()
-        ctx.roundRect(-84, -365, 196, 22, 6)
+        ctx.roundRect(cur.gatePos.x - 84, cur.gatePos.y + 25, 196, 22, 6)
         ctx.fill()
 
-        for (const tr of TREES) {
+        for (const tr of cur.trees) {
           const colR = getTreeColliderRadius(tr)
           ctx.save()
           ctx.translate(tr.x, tr.y)
 
-          // Soft organic dappled shadow cast SE onto the courtyard ground
+          // Soft organic dappled shadow cast SE onto the ground
           ctx.fillStyle = white ? 'rgba(38, 42, 34, 0.12)' : 'rgba(18, 22, 20, 0.20)'
           ctx.beginPath()
-          ctx.ellipse(15, 11, tr.r * 0.96, tr.r * 0.58, 0.08, 0, Math.PI * 2)
+          ctx.ellipse(
+            15,
+            11,
+            tr.kind === 'cactus' ? tr.r * 0.56 : tr.r * 0.96,
+            tr.kind === 'cactus' ? tr.r * 0.34 : tr.r * 0.58,
+            0.08,
+            0,
+            Math.PI * 2
+          )
           ctx.fill()
 
-          // Natural earthy soil & moss patch under roots
-          ctx.fillStyle = white ? 'rgba(118, 124, 98, 0.22)' : 'rgba(58, 68, 54, 0.28)'
+          // Natural soil / sand / snow / ash patch under base
+          ctx.fillStyle =
+            tr.kind === 'palm' || tr.kind === 'cactus'
+              ? white
+                ? 'rgba(186, 152, 98, 0.28)'
+                : 'rgba(122, 98, 62, 0.28)'
+              : tr.kind === 'snow-pine'
+                ? white
+                  ? 'rgba(222, 236, 245, 0.45)'
+                  : 'rgba(148, 168, 180, 0.32)'
+                : tr.kind === 'charred'
+                  ? white
+                    ? 'rgba(72, 62, 58, 0.28)'
+                    : 'rgba(36, 30, 28, 0.36)'
+                  : white
+                    ? 'rgba(118, 124, 98, 0.22)'
+                    : 'rgba(58, 68, 54, 0.28)'
           ctx.beginPath()
           ctx.ellipse(0, 3, colR * 0.92, colR * 0.56, 0, 0, Math.PI * 2)
           ctx.fill()
@@ -2073,7 +2590,6 @@ export default function Samurai2DPlatformer() {
                 const x1 = bx + leanX * t1 * t1
                 const y1 = by - h * t1
 
-                // Dark outline + shaded green culm body
                 ctx.beginPath()
                 ctx.moveTo(x0, y0)
                 ctx.lineTo(x1, y1)
@@ -2085,7 +2601,6 @@ export default function Samurai2DPlatformer() {
                 ctx.lineWidth = w - 0.2
                 ctx.stroke()
 
-                // Sunlit cylindrical sheen along left edge of bamboo stalk
                 ctx.beginPath()
                 ctx.moveTo(x0 - w * 0.22, y0)
                 ctx.lineTo(x1 - w * 0.22, y1)
@@ -2093,7 +2608,6 @@ export default function Samurai2DPlatformer() {
                 ctx.lineWidth = 1.0
                 ctx.stroke()
 
-                // Realistic raised bamboo node ring & subtle pale sheath line
                 if (s > 0) {
                   ctx.beginPath()
                   ctx.moveTo(x0 - w * 0.68, y0)
@@ -2109,7 +2623,6 @@ export default function Samurai2DPlatformer() {
                   ctx.stroke()
                 }
 
-                // Delicate diagonal bamboo side twigs sprouting from upper nodes
                 if (s >= 3) {
                   const sideDir = (s + Math.round(bx)) % 2 === 0 ? 1 : -1
                   ctx.beginPath()
@@ -2121,15 +2634,104 @@ export default function Samurai2DPlatformer() {
                 }
               }
             }
-          } else if (tr.kind === 'pine') {
-            // Real Pine Tree: rugged tapered bark trunk, spreading roots & branching main boughs!
-            const barkLit = white ? '#76614d' : '#594b3e'
-            const barkShade = white ? '#524234' : '#3a3028'
+          } else if (tr.kind === 'palm') {
+            // Real Date / Oasis Palm: gracefully curved tapering ringed trunk!
+            const lean = (hash1(tr.seed * 2.3) > 0.5 ? 1 : -1) * (12 + hash1(tr.seed * 5.1) * 10)
+            const trunkH = tr.r * 0.92
+            const segs = 9
+            for (let s = 0; s < segs; s++) {
+              const t0 = s / segs
+              const t1 = (s + 1) / segs
+              const x0 = lean * t0 * t0
+              const y0 = 3 - trunkH * t0
+              const x1 = lean * t1 * t1
+              const y1 = 3 - trunkH * t1
+              const w0 = 8.4 - t0 * 3.8
+              ctx.beginPath()
+              ctx.moveTo(x0, y0)
+              ctx.lineTo(x1, y1)
+              ctx.lineCap = 'round'
+              ctx.strokeStyle = '#3b2f24'
+              ctx.lineWidth = w0 + 2.2
+              ctx.stroke()
+              ctx.strokeStyle = s % 2 === 0 ? (white ? '#9c7e58' : '#735e43') : white ? '#866947' : '#635038'
+              ctx.lineWidth = w0
+              ctx.stroke()
+              // Fibrous palm trunk ring band
+              ctx.beginPath()
+              ctx.moveTo(x1 - w0 * 0.55, y1 + 1)
+              ctx.lineTo(x1 + w0 * 0.55, y1 - 1)
+              ctx.strokeStyle = 'rgba(42, 32, 22, 0.55)'
+              ctx.lineWidth = 1.0
+              ctx.stroke()
+            }
+          } else if (tr.kind === 'cactus') {
+            // Real Desert Saguaro Cactus: ribbed vertical emerald-sage column & asymmetric upward side arms!
+            const cLit = white ? '#7d9b6b' : '#58704c'
+            const cShade = white ? '#567048' : '#3c5034'
+            const cInk = '#2c3628'
+            const h = tr.r * 0.98
+            const armDir = hash1(tr.seed * 3.1) > 0.5 ? 1 : -1
+
+            // Left & right curved upward saguaro arms
+            const drawArm = (side: number, startY: number, reachX: number, riseH: number) => {
+              ctx.beginPath()
+              ctx.moveTo(side * 5, startY)
+              ctx.quadraticCurveTo(side * reachX, startY + 2, side * reachX, startY - riseH)
+              ctx.lineCap = 'round'
+              ctx.strokeStyle = cInk
+              ctx.lineWidth = 11.4
+              ctx.stroke()
+              ctx.strokeStyle = side > 0 ? cShade : cLit
+              ctx.lineWidth = 8.6
+              ctx.stroke()
+              // Vertical rib highlight along arm
+              ctx.beginPath()
+              ctx.moveTo(side * (reachX - 1.2), startY - 2)
+              ctx.lineTo(side * (reachX - 1.2), startY - riseH + 2)
+              ctx.strokeStyle = 'rgba(232, 240, 210, 0.35)'
+              ctx.lineWidth = 1.1
+              ctx.stroke()
+            }
+            drawArm(armDir, -h * 0.42, 16, 20)
+            drawArm(-armDir, -h * 0.58, 14, 16)
+
+            // Main vertical ribbed column
+            ctx.beginPath()
+            ctx.moveTo(-6.8, 3)
+            ctx.lineTo(-6.0, -h)
+            ctx.arc(0, -h, 6.0, Math.PI, 0)
+            ctx.lineTo(6.8, 3)
+            ctx.quadraticCurveTo(0, 6.5, -6.8, 3)
+            ctx.closePath()
+            const cGrad = ctx.createLinearGradient(-7, 0, 7, 0)
+            cGrad.addColorStop(0, cLit)
+            cGrad.addColorStop(0.6, cLit)
+            cGrad.addColorStop(1, cShade)
+            ctx.fillStyle = cGrad
+            ctx.fill()
+            ctx.strokeStyle = cInk
+            ctx.lineWidth = 1.4
+            ctx.stroke()
+
+            // Vertical cactus pleats / ribs
+            ctx.strokeStyle = 'rgba(40, 52, 34, 0.45)'
+            ctx.lineWidth = 0.85
+            ctx.beginPath()
+            for (const rxOff of [-2.8, 0.2, 3.0]) {
+              ctx.moveTo(rxOff, 2)
+              ctx.lineTo(rxOff * 0.85, -h - 3)
+            }
+            ctx.stroke()
+          } else if (tr.kind === 'pine' || tr.kind === 'snow-pine') {
+            // Real Pine / Alpine Snow-Pine: rugged tapered bark trunk, spreading roots & branching boughs!
+            const isSnow = tr.kind === 'snow-pine'
+            const barkLit = isSnow ? (white ? '#655952' : '#4a423e') : white ? '#76614d' : '#594b3e'
+            const barkShade = isSnow ? (white ? '#443c38' : '#312b28') : white ? '#524234' : '#3a3028'
             const barkInk = '#2b2824'
             const lean = (hash1(tr.seed * 2.1) - 0.5) * 14
             const trunkH = tr.r * 0.58
 
-            // Spreading woody surface roots gripping the ground
             for (const rAng of [-2.5, -0.55, 0.3, 1.2, 2.3, 2.85]) {
               const rLen = colR * (0.55 + hash1(tr.seed + rAng * 5) * 0.3)
               const rx = Math.cos(rAng) * rLen
@@ -2146,7 +2748,6 @@ export default function Samurai2DPlatformer() {
               ctx.stroke()
             }
 
-            // Rugged curved wooden pine trunk (left sunlit, right shaded!)
             ctx.beginPath()
             ctx.moveTo(-10.5, 4)
             ctx.bezierCurveTo(-8.5, -trunkH * 0.35, -6 + lean * 0.6, -trunkH * 0.7, -4.5 + lean, -trunkH)
@@ -2164,7 +2765,6 @@ export default function Samurai2DPlatformer() {
             ctx.lineWidth = 1.35
             ctx.stroke()
 
-            // Rough pine bark plates & vertical fissures
             ctx.strokeStyle = 'rgba(34, 28, 22, 0.52)'
             ctx.lineWidth = 0.95
             ctx.beginPath()
@@ -2174,7 +2774,6 @@ export default function Samurai2DPlatformer() {
             }
             ctx.stroke()
 
-            // Visible woody main limbs branching out into the pine crown
             for (const [bDx, bDy, bw] of [
               [-24, -14, 4.6],
               [22, -12, 4.4],
@@ -2192,10 +2791,59 @@ export default function Samurai2DPlatformer() {
               ctx.lineWidth = bw
               ctx.stroke()
             }
+          } else if (tr.kind === 'charred') {
+            // Volcanic Charred Ironwood Tree: gnarled dark obsidian-charcoal trunk with subtle ember bark fissures!
+            const barkLit = white ? '#4f4642' : '#393330'
+            const barkShade = white ? '#302a28' : '#221e1d'
+            const barkInk = '#1c1816'
+            const lean = (hash1(tr.seed * 2.9) - 0.5) * 14
+            const trunkH = tr.r * 0.62
+
+            for (const rAng of [-2.4, -0.5, 0.45, 2.45]) {
+              const rx = Math.cos(rAng) * (colR * 0.64)
+              const ry = Math.sin(rAng) * (colR * 0.38) + 3
+              ctx.beginPath()
+              ctx.moveTo(0, 2)
+              ctx.lineTo(rx * 0.55, ry * 0.45 - 2)
+              ctx.lineTo(rx, ry)
+              ctx.lineCap = 'round'
+              ctx.strokeStyle = barkInk
+              ctx.lineWidth = 4.6
+              ctx.stroke()
+              ctx.strokeStyle = barkLit
+              ctx.lineWidth = 2.6
+              ctx.stroke()
+            }
+
+            ctx.beginPath()
+            ctx.moveTo(-9.5, 4)
+            ctx.bezierCurveTo(-7.5, -trunkH * 0.38, -5.5 + lean * 0.6, -trunkH * 0.7, -3.8 + lean, -trunkH)
+            ctx.lineTo(4.0 + lean, -trunkH)
+            ctx.bezierCurveTo(6.0 + lean * 0.6, -trunkH * 0.7, 8.5, -trunkH * 0.38, 10.2, 4)
+            ctx.quadraticCurveTo(0, 7, -9.5, 4)
+            ctx.closePath()
+            const vGrad = ctx.createLinearGradient(-9, 0, 10, 0)
+            vGrad.addColorStop(0, barkLit)
+            vGrad.addColorStop(0.55, barkLit)
+            vGrad.addColorStop(1, barkShade)
+            ctx.fillStyle = vGrad
+            ctx.fill()
+            ctx.strokeStyle = barkInk
+            ctx.lineWidth = 1.35
+            ctx.stroke()
+
+            // Subtle smoldering ember crack inside charred bark
+            ctx.strokeStyle = 'rgba(228, 104, 38, 0.58)'
+            ctx.lineWidth = 1.0
+            ctx.beginPath()
+            ctx.moveTo(-1.5, 1)
+            ctx.quadraticCurveTo(lean * 0.4, -trunkH * 0.45, lean * 0.8 + 0.5, -trunkH * 0.82)
+            ctx.stroke()
           } else {
-            // Real Broadleaf / Japanese Maple Tree: forked dark-wood trunk, roots, multiple limbs & fallen leaves!
-            const barkLit = white ? '#66564a' : '#4d443e'
-            const barkShade = white ? '#473c34' : '#352f2b'
+            // Real Broadleaf Maple OR Mossy Jungle Canopy Tree
+            const isJungle = tr.kind === 'jungle'
+            const barkLit = isJungle ? (white ? '#6d614d' : '#524b3d') : white ? '#66564a' : '#4d443e'
+            const barkShade = isJungle ? (white ? '#4b4536' : '#373329') : white ? '#473c34' : '#352f2b'
             const barkInk = '#2b2824'
             const lean = (hash1(tr.seed * 3.7) - 0.5) * 10
             const trunkH = tr.r * 0.56
@@ -2207,38 +2855,45 @@ export default function Samurai2DPlatformer() {
               ctx.save()
               ctx.translate(Math.cos(la) * ld, Math.sin(la) * ld * 0.62 + 4)
               ctx.rotate(la)
-              ctx.fillStyle = l % 2 === 0 ? 'rgba(154, 72, 54, 0.52)' : 'rgba(176, 108, 62, 0.46)'
+              ctx.fillStyle = isJungle
+                ? l % 2 === 0
+                  ? 'rgba(72, 118, 66, 0.50)'
+                  : 'rgba(110, 142, 76, 0.46)'
+                : l % 2 === 0
+                  ? 'rgba(154, 72, 54, 0.52)'
+                  : 'rgba(176, 108, 62, 0.46)'
               ctx.beginPath()
               ctx.ellipse(0, 0, 2.8, 1.5, 0, 0, Math.PI * 2)
               ctx.fill()
               ctx.restore()
             }
 
-            // Spreading roots
-            for (const rAng of [-2.3, -0.4, 0.5, 2.5]) {
-              const rx = Math.cos(rAng) * (colR * 0.56)
-              const ry = Math.sin(rAng) * (colR * 0.36) + 3
+            // Spreading / buttress roots
+            for (const rAng of isJungle ? [-2.5, -1.7, -0.5, 0.4, 1.5, 2.5] : [-2.3, -0.4, 0.5, 2.5]) {
+              const rx = Math.cos(rAng) * (colR * (isJungle ? 0.68 : 0.56))
+              const ry = Math.sin(rAng) * (colR * (isJungle ? 0.44 : 0.36)) + 3
               ctx.beginPath()
               ctx.moveTo(0, 2)
               ctx.quadraticCurveTo(rx * 0.5, ry * 0.4 - 1.5, rx, ry)
               ctx.lineCap = 'round'
               ctx.strokeStyle = barkInk
-              ctx.lineWidth = 4.5
+              ctx.lineWidth = isJungle ? 5.6 : 4.5
               ctx.stroke()
               ctx.strokeStyle = barkLit
-              ctx.lineWidth = 2.6
+              ctx.lineWidth = isJungle ? 3.4 : 2.6
               ctx.stroke()
             }
 
-            // Tapered curving trunk with lit/shaded bark gradient
+            // Tapered curving trunk
+            const baseW = isJungle ? 10.2 : 8.2
             ctx.beginPath()
-            ctx.moveTo(-8.2, 4)
-            ctx.quadraticCurveTo(-5.5 + lean * 0.3, -trunkH * 0.5, -3.5 + lean, -trunkH)
-            ctx.lineTo(4.0 + lean, -trunkH)
-            ctx.quadraticCurveTo(6.5 + lean * 0.3, -trunkH * 0.5, 8.8, 4)
-            ctx.quadraticCurveTo(0, 7, -8.2, 4)
+            ctx.moveTo(-baseW, 4)
+            ctx.quadraticCurveTo(-baseW * 0.66 + lean * 0.3, -trunkH * 0.5, -4.0 + lean, -trunkH)
+            ctx.lineTo(4.4 + lean, -trunkH)
+            ctx.quadraticCurveTo(baseW * 0.72 + lean * 0.3, -trunkH * 0.5, baseW + 0.6, 4)
+            ctx.quadraticCurveTo(0, 7, -baseW, 4)
             ctx.closePath()
-            const mGrad = ctx.createLinearGradient(-8, 0, 9, 0)
+            const mGrad = ctx.createLinearGradient(-baseW, 0, baseW + 1, 0)
             mGrad.addColorStop(0, barkLit)
             mGrad.addColorStop(0.6, barkLit)
             mGrad.addColorStop(1, barkShade)
@@ -2248,7 +2903,6 @@ export default function Samurai2DPlatformer() {
             ctx.lineWidth = 1.3
             ctx.stroke()
 
-            // Forked main limbs spreading into canopy
             for (const [bDx, bDy, bw] of [
               [-22, -16, 4.0],
               [21, -15, 3.8],
@@ -2271,58 +2925,132 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
         ctx.restore()
+        } // end visible continents loop
       }
 
-      // Always render the Merchant Shop Stall & Coins/Targets!
+      // Always render Collectibles, Dummies & visible Merchant Shop Outposts!
       drawCollectiblesAndDummies(time)
-      drawMerchantShopGround(time, nearShop)
+      for (const cur of CONTINENTS) {
+        if (Math.abs(cur.shopPos.x - cam.x) > W * 0.5 + 160 || Math.abs(cur.shopPos.y - cam.y) > H * 0.5 + 160) {
+          continue
+        }
+        drawMerchantShopGround(cur, time, nearShopId === cur.id)
+      }
     }
 
-    const drawBirdsEyeOverhead = (time: number, nearShop: boolean) => {
-      drawMerchantShopOverhead(time, nearShop)
+    const drawBirdsEyeOverhead = (time: number, nearShopId: ContinentId | null, W: number, H: number) => {
+      for (const cur of CONTINENTS) {
+        if (Math.abs(cur.shopPos.x - cam.x) <= W * 0.5 + 160 && Math.abs(cur.shopPos.y - cam.y) <= H * 0.5 + 160) {
+          drawMerchantShopOverhead(cur, time, nearShopId === cur.id)
+        }
+      }
 
       if (!showBgRef.current) return
 
-      // North Shrine Torii Gate Top Beam
-      ctx.save()
-      ctx.translate(0, -390)
+      const white = isWhitePaper()
+      const cullX = W * 0.5 + 950
+      const cullY = H * 0.5 + 950
+
+      for (const cur of CONTINENTS) {
+        if (Math.abs(cur.origin.x - cam.x) > cullX || Math.abs(cur.origin.y - cam.y) > cullY) continue
+
+        // Continent North Gate Top Beam (Torii / Desert Sandstone Arch / Frost Torii / Moss Temple / Obsidian Torii)
+        ctx.save()
+        ctx.translate(cur.gatePos.x, cur.gatePos.y)
+        const pillarFill =
+          cur.gateStyle === 'obsidian'
+            ? white
+              ? '#4f4845'
+              : '#342f2d'
+            : cur.gateStyle === 'sandstone'
+              ? white
+                ? '#dfC79c'
+                : '#a6916d'
+              : getStoneFill(cur)
       for (const px of [-56, 56]) {
         ctx.beginPath()
         ctx.arc(px, 4, 8, 0, Math.PI * 2)
-        ctx.fillStyle = getStoneFill()
+        ctx.fillStyle = pillarFill
         ctx.fill()
         ctx.strokeStyle = 'rgba(54, 53, 50, 0.65)'
         ctx.lineWidth = 1.15
         ctx.stroke()
       }
-      ctx.beginPath()
-      ctx.moveTo(-98, -8)
-      ctx.quadraticCurveTo(0, -14, 98, -8)
-      ctx.lineTo(94, 8)
-      ctx.quadraticCurveTo(0, 12, -94, 8)
-      ctx.closePath()
-      ctx.fillStyle = getStoneFill()
-      ctx.fill()
-      ctx.strokeStyle = 'rgba(54, 53, 50, 0.72)'
-      ctx.lineWidth = 1.3
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.moveTo(-90, 0)
-      ctx.quadraticCurveTo(0, -3, 90, 0)
-      ctx.strokeStyle = 'rgba(54, 53, 50, 0.35)'
-      ctx.lineWidth = 0.9
-      ctx.stroke()
+
+      if (cur.gateStyle === 'sandstone') {
+        // Stepped Desert Sandstone Gateway Arch
+        ctx.fillStyle = white ? '#e3cba0' : '#a8936f'
+        ctx.beginPath()
+        ctx.roundRect(-84, -10, 168, 20, 3)
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(72, 54, 34, 0.72)'
+        ctx.lineWidth = 1.3
+        ctx.stroke()
+        ctx.fillStyle = white ? '#d4b37e' : '#967e58'
+        ctx.fillRect(-66, -15, 132, 7)
+        ctx.strokeRect(-66, -15, 132, 7)
+      } else if (cur.gateStyle === 'temple') {
+        // Carved Mossy Jungle Temple Stone Lintel
+        ctx.fillStyle = white ? '#c4cbb6' : '#858f7c'
+        ctx.beginPath()
+        ctx.roundRect(-90, -10, 180, 20, 4)
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(46, 56, 42, 0.72)'
+        ctx.lineWidth = 1.3
+        ctx.stroke()
+        ctx.fillStyle = white ? '#6c9159' : '#4a683e'
+        ctx.beginPath()
+        ctx.ellipse(-34, -4, 24, 5, 0.1, 0, Math.PI * 2)
+        ctx.ellipse(28, 3, 22, 5, -0.1, 0, Math.PI * 2)
+        ctx.fill()
+      } else {
+        // Curved Torii Beam (Kyoto Stone / Frost Snow-Capped / Volcanic Obsidian)
+        ctx.beginPath()
+        ctx.moveTo(-98, -8)
+        ctx.quadraticCurveTo(0, -14, 98, -8)
+        ctx.lineTo(94, 8)
+        ctx.quadraticCurveTo(0, 12, -94, 8)
+        ctx.closePath()
+        ctx.fillStyle = pillarFill
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(54, 53, 50, 0.72)'
+        ctx.lineWidth = 1.3
+        ctx.stroke()
+
+        if (cur.gateStyle === 'frost-torii') {
+          ctx.fillStyle = white ? '#f5fafd' : '#d2e2ec'
+          ctx.beginPath()
+          ctx.moveTo(-92, -7)
+          ctx.quadraticCurveTo(0, -13, 92, -7)
+          ctx.lineTo(86, 0)
+          ctx.quadraticCurveTo(0, -4, -86, 0)
+          ctx.closePath()
+          ctx.fill()
+        } else if (cur.gateStyle === 'obsidian') {
+          ctx.strokeStyle = '#d45828'
+          ctx.lineWidth = 2.0
+          ctx.beginPath()
+          ctx.moveTo(-88, 0)
+          ctx.quadraticCurveTo(0, -3, 88, 0)
+          ctx.stroke()
+        } else {
+          ctx.beginPath()
+          ctx.moveTo(-90, 0)
+          ctx.quadraticCurveTo(0, -3, 90, 0)
+          ctx.strokeStyle = 'rgba(54, 53, 50, 0.35)'
+          ctx.lineWidth = 0.9
+          ctx.stroke()
+        }
+      }
       ctx.restore()
 
-      // Real Botanical 2.5D Courtyard Trees (Natural jagged pine needles, organic dappled maple leaves & drooping bamboo!)
-      const white = isWhitePaper()
-      for (const tr of TREES) {
+      // Real Botanical 2.5D Flora Crowns (All 8 Species!)
+      for (const tr of cur.trees) {
         const swayX = Math.sin(time * 1.1 + tr.seed) * 2.2
         const swayY = Math.cos(time * 0.85 + tr.seed * 1.3) * 1.2
 
         ctx.save()
         if (tr.kind === 'bamboo') {
-          // Real drooping asymmetric bamboo leaf sprays hanging naturally from upper culm twigs!
           const nodes: [number, number, number][] = [
             [-21, -44, -1],
             [-11, -55, -1],
@@ -2342,7 +3070,6 @@ export default function Samurai2DPlatformer() {
             const blades = 5
             for (let b = 0; b < blades; b++) {
               const spread = (b / (blades - 1) - 0.5) * 1.15
-              // Natural downward-drooping gravity angle (between 0.25 and 1.35 rad below horizontal!)
               const droopAng =
                 (dir > 0 ? 0.35 : Math.PI - 0.35) +
                 spread * 0.65 +
@@ -2365,13 +3092,94 @@ export default function Samurai2DPlatformer() {
               ctx.restore()
             }
           }
-        } else if (tr.kind === 'pine') {
-          // Real Organic Pine Tree: dense overlapping jagged needle-spray boughs (NO smooth cartoon clouds!)
+        } else if (tr.kind === 'palm') {
+          // Real Arching Feathered Date Palm Fronds + Date Clusters!
+          const lean = (hash1(tr.seed * 2.3) > 0.5 ? 1 : -1) * (12 + hash1(tr.seed * 5.1) * 10)
+          const trunkH = tr.r * 0.92
+          ctx.translate(tr.x + lean + swayX * 0.85, tr.y + 3 - trunkH + swayY * 0.75)
+
+          // Small clusters of golden-amber desert dates beneath crown
+          for (const [dx, dy] of [
+            [-5, 6],
+            [5, 7],
+          ]) {
+            ctx.fillStyle = '#c88732'
+            ctx.beginPath()
+            ctx.arc(dx, dy, 3.2, 0, Math.PI * 2)
+            ctx.arc(dx + 2.5, dy + 2.2, 2.6, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = '#3b2f24'
+            ctx.lineWidth = 0.7
+            ctx.stroke()
+          }
+
+          const frondCount = 10
+          for (let f = 0; f < frondCount; f++) {
+            const ang = (f / frondCount) * Math.PI * 2 + tr.seed * 0.4 + Math.sin(time * 1.3 + f) * 0.04
+            const fLen = tr.r * (0.68 + hash1(tr.seed + f * 3.7) * 0.28)
+            const isUpper = f % 2 === 0
+            ctx.save()
+            ctx.rotate(ang)
+            // Arching palm midrib
+            ctx.beginPath()
+            ctx.moveTo(0, 0)
+            ctx.quadraticCurveTo(fLen * 0.55, -5, fLen, 4)
+            ctx.strokeStyle = '#38462c'
+            ctx.lineWidth = 1.6
+            ctx.stroke()
+
+            // Feathered split leaflets along both sides of midrib
+            const leaflets = 7
+            for (let lf = 1; lf <= leaflets; lf++) {
+              const t = lf / (leaflets + 0.5)
+              const lx = fLen * t
+              const ly = -5 * (2 * t * (1 - t)) + 4 * t * t
+              const ll = (1 - Math.abs(t - 0.48) * 1.2) * 13 + 4
+              for (const side of [-1, 1]) {
+                ctx.beginPath()
+                ctx.moveTo(lx, ly)
+                ctx.quadraticCurveTo(lx + ll * 0.45, ly + side * ll * 0.55, lx + ll * 0.78, ly + side * ll * 0.92)
+                ctx.quadraticCurveTo(lx + ll * 0.25, ly + side * ll * 0.45, lx - 1.5, ly)
+                ctx.closePath()
+                ctx.fillStyle = isUpper
+                  ? white
+                    ? '#7a9a5a'
+                    : '#567042'
+                  : white
+                    ? '#5c7a45'
+                    : '#405632'
+                ctx.fill()
+                ctx.strokeStyle = 'rgba(34, 44, 28, 0.45)'
+                ctx.lineWidth = 0.55
+                ctx.stroke()
+              }
+            }
+            ctx.restore()
+          }
+        } else if (tr.kind === 'cactus') {
+          // Delicate desert blossoms crowning the Saguaro tips
+          const h = tr.r * 0.98
+          ctx.translate(tr.x + swayX * 0.15, tr.y - h - 4)
+          for (const [bx, by] of [
+            [-2, 0],
+            [2.5, -1],
+            [0, -2.5],
+          ]) {
+            ctx.fillStyle = white ? '#f4e6c4' : '#d6c8a8'
+            ctx.beginPath()
+            ctx.arc(bx, by, 2.5, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = '#b85c44'
+            ctx.lineWidth = 0.7
+            ctx.stroke()
+          }
+        } else if (tr.kind === 'pine' || tr.kind === 'snow-pine') {
+          // Real Organic Pine OR Snow-Laden Alpine Spruce!
+          const isSnow = tr.kind === 'snow-pine'
           const lean = (hash1(tr.seed * 2.1) - 0.5) * 14
           const trunkH = tr.r * 0.58
           ctx.translate(tr.x + lean + swayX * 0.55, tr.y - trunkH + swayY * 0.55)
 
-          // 16 organically placed pine bough clusters (bottom deep shadow -> mid pine -> top sunlit needles!)
           const boughCount = 16
           for (let b = 0; b < boughCount; b++) {
             const tier = b < 6 ? 0 : b < 12 ? 1 : 2
@@ -2380,8 +3188,19 @@ export default function Samurai2DPlatformer() {
             const bx = Math.cos(ang) * tr.r * radFrac + (hash1(tr.seed + b * 3.1) - 0.5) * 8
             const by = Math.sin(ang) * tr.r * radFrac * 0.64 - tier * 10 + 8
             const br = tr.r * (tier === 0 ? 0.34 : tier === 1 ? 0.32 : 0.28)
-            const fillCol =
-              tier === 0
+            const fillCol = isSnow
+              ? tier === 0
+                ? white
+                  ? '#364d52'
+                  : '#26383d'
+                : tier === 1
+                  ? white
+                    ? '#4b686e'
+                    : '#374f55'
+                  : white
+                    ? '#64838a'
+                    : '#4b666c'
+              : tier === 0
                 ? white
                   ? '#3f5241'
                   : '#2d3b30'
@@ -2395,7 +3214,6 @@ export default function Samurai2DPlatformer() {
 
             ctx.save()
             ctx.translate(bx, by)
-            // Jagged irregular pine bough silhouette (built from sharp radiating needle tips!)
             ctx.beginPath()
             const needles = 22
             for (let i = 0; i <= needles; i++) {
@@ -2413,25 +3231,79 @@ export default function Samurai2DPlatformer() {
             ctx.lineWidth = 0.85
             ctx.stroke()
 
-            // Fine textured pine-needle brush strokes across the bough
-            ctx.strokeStyle = tier === 2 ? 'rgba(232, 238, 214, 0.34)' : 'rgba(28, 36, 28, 0.34)'
-            ctx.lineWidth = 0.75
-            ctx.beginPath()
-            for (let n = 0; n < 8; n++) {
-              const na = (n / 8) * Math.PI * 2 + tr.seed + b
-              ctx.moveTo(Math.cos(na) * br * 0.18, Math.sin(na) * br * 0.14)
-              ctx.lineTo(Math.cos(na) * br * 0.92, Math.sin(na) * br * 0.66)
+            if (isSnow && tier >= 1) {
+              // Crisp white snowdrift cap clinging to upper pine boughs!
+              ctx.beginPath()
+              ctx.ellipse(0, -br * 0.14, br * 0.76, br * 0.44, 0, Math.PI, Math.PI * 2)
+              ctx.quadraticCurveTo(br * 0.35, br * 0.08, 0, -br * 0.04)
+              ctx.quadraticCurveTo(-br * 0.4, br * 0.1, -br * 0.76, -br * 0.14)
+              ctx.closePath()
+              ctx.fillStyle = white ? 'rgba(247, 251, 254, 0.92)' : 'rgba(214, 228, 236, 0.86)'
+              ctx.fill()
+              ctx.strokeStyle = 'rgba(78, 104, 122, 0.42)'
+              ctx.lineWidth = 0.7
+              ctx.stroke()
+            } else {
+              ctx.strokeStyle = tier === 2 ? 'rgba(232, 238, 214, 0.34)' : 'rgba(28, 36, 28, 0.34)'
+              ctx.lineWidth = 0.75
+              ctx.beginPath()
+              for (let n = 0; n < 8; n++) {
+                const na = (n / 8) * Math.PI * 2 + tr.seed + b
+                ctx.moveTo(Math.cos(na) * br * 0.18, Math.sin(na) * br * 0.14)
+                ctx.lineTo(Math.cos(na) * br * 0.92, Math.sin(na) * br * 0.66)
+              }
+              ctx.stroke()
             }
-            ctx.stroke()
             ctx.restore()
           }
+        } else if (tr.kind === 'charred') {
+          // Volcanic Charred Ironwood Crown: stark twisted burnt branches + sparse smoldering ember-ash leaf tufts!
+          const lean = (hash1(tr.seed * 2.9) - 0.5) * 14
+          const trunkH = tr.r * 0.62
+          ctx.translate(tr.x + lean + swayX * 0.35, tr.y - trunkH + swayY * 0.35)
+
+          // Twisted gnarled charcoal branches
+          ctx.lineCap = 'round'
+          for (let b = 0; b < 7; b++) {
+            const ba = (b / 7) * Math.PI * 2 + tr.seed * 0.5
+            const bLen = tr.r * (0.58 + hash1(tr.seed + b * 4.1) * 0.25)
+            const mx = Math.cos(ba) * bLen * 0.52 + Math.sin(b) * 6
+            const my = Math.sin(ba) * bLen * 0.38 - 6
+            const ex = Math.cos(ba) * bLen
+            const ey = Math.sin(ba) * bLen * 0.46 - 10
+            ctx.beginPath()
+            ctx.moveTo(0, 2)
+            ctx.quadraticCurveTo(mx, my, ex, ey)
+            ctx.strokeStyle = '#1f1b1a'
+            ctx.lineWidth = 4.2
+            ctx.stroke()
+            ctx.strokeStyle = white ? '#4a413e' : '#352f2d'
+            ctx.lineWidth = 2.1
+            ctx.stroke()
+          }
+
+          // Sparse smoldering russet-ash leaf clusters
+          for (let c = 0; c < 11; c++) {
+            const ca = (c / 11) * Math.PI * 2 + tr.seed * 0.8
+            const cd = tr.r * (0.28 + hash1(tr.seed + c * 5.3) * 0.42)
+            const cx = Math.cos(ca) * cd
+            const cy = Math.sin(ca) * cd * 0.58 - 8
+            const cr = tr.r * (0.16 + hash1(tr.seed + c * 2.7) * 0.09)
+            ctx.fillStyle = c % 3 === 0 ? '#a84426' : c % 2 === 0 ? '#693c32' : '#4a3d3a'
+            ctx.beginPath()
+            ctx.ellipse(cx, cy, cr, cr * 0.72, ca, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(30, 22, 20, 0.65)'
+            ctx.lineWidth = 0.8
+            ctx.stroke()
+          }
         } else {
-          // Real Broadleaf / Japanese Maple Tree: dark inner branches peeking through 24 organic dappled leaf tufts!
+          // Real Broadleaf Maple OR Lush Emerald Jungle Canopy!
+          const isJungle = tr.kind === 'jungle'
           const lean = (hash1(tr.seed * 3.7) - 0.5) * 10
           const trunkH = tr.r * 0.56
           ctx.translate(tr.x + lean + swayX * 0.7, tr.y - trunkH + swayY * 0.7)
 
-          // Inner branching dark twigs visible inside canopy gaps
           ctx.strokeStyle = '#3b332c'
           ctx.lineWidth = 1.6
           ctx.lineCap = 'round'
@@ -2443,7 +3315,6 @@ export default function Samurai2DPlatformer() {
           }
           ctx.stroke()
 
-          // 24 small varied organic leaf tufts (shadow underside -> deep russet-olive -> sunlit outer leaves!)
           const tuftCount = 24
           for (let c = 0; c < tuftCount; c++) {
             const tier = c < 9 ? 0 : c < 18 ? 1 : 2
@@ -2454,8 +3325,19 @@ export default function Samurai2DPlatformer() {
             const cx = Math.cos(ang) * tr.r * radFrac
             const cy = Math.sin(ang) * tr.r * radFrac * 0.68 - tier * 8.5 + 6
             const cr = tr.r * (0.20 + hash1(tr.seed + c * 4.3) * 0.11)
-            const col =
-              tier === 0
+            const col = isJungle
+              ? tier === 0
+                ? white
+                  ? '#2e583b'
+                  : '#20402b'
+                : tier === 1
+                  ? white
+                    ? '#467c4f'
+                    : '#325b3a'
+                  : white
+                    ? '#69a263'
+                    : '#4b7847'
+              : tier === 0
                 ? white
                   ? '#6f3e34'
                   : '#52302a'
@@ -2469,7 +3351,6 @@ export default function Samurai2DPlatformer() {
 
             ctx.save()
             ctx.translate(cx, cy)
-            // Irregular jagged organic leaf-cluster silhouette
             ctx.beginPath()
             const segs = 14
             for (let i = 0; i <= segs; i++) {
@@ -2483,13 +3364,18 @@ export default function Samurai2DPlatformer() {
             ctx.closePath()
             ctx.fillStyle = col
             ctx.fill()
-            ctx.strokeStyle = 'rgba(46, 32, 28, 0.52)'
+            ctx.strokeStyle = isJungle ? 'rgba(26, 46, 30, 0.52)' : 'rgba(46, 32, 28, 0.52)'
             ctx.lineWidth = 0.8
             ctx.stroke()
 
-            // Crisp individual tiny leaf accents on sunlit upper tufts
             if (tier === 2) {
-              ctx.fillStyle = white ? 'rgba(236, 198, 152, 0.45)' : 'rgba(210, 174, 136, 0.28)'
+              ctx.fillStyle = isJungle
+                ? white
+                  ? 'rgba(218, 240, 178, 0.42)'
+                  : 'rgba(176, 206, 146, 0.28)'
+                : white
+                  ? 'rgba(236, 198, 152, 0.45)'
+                  : 'rgba(210, 174, 136, 0.28)'
               ctx.beginPath()
               ctx.ellipse(-cr * 0.18, -cr * 0.18, cr * 0.34, cr * 0.20, -0.35, 0, Math.PI * 2)
               ctx.fill()
@@ -2499,6 +3385,7 @@ export default function Samurai2DPlatformer() {
         }
         ctx.restore()
       }
+      } // end visible continents overhead loop
     }
 
     // =========================================================================
@@ -2548,8 +3435,9 @@ export default function Samurai2DPlatformer() {
       // --- 1. 360° BIRD'S-EYE MOVEMENT PHYSICS ---
       const keys = keysRef.current
       const vIn = virtualRef.current
-      let inX = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0) + vIn.dx
-      let inY = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0) + vIn.dy
+      const modalOpen = shopOpenRef.current || fullMapOpenRef.current
+      let inX = modalOpen ? 0 : (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0) + vIn.dx
+      let inY = modalOpen ? 0 : (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0) + vIn.dy
       const inLen = Math.hypot(inX, inY)
       if (inLen > 1) {
         inX /= inLen
@@ -2678,8 +3566,34 @@ export default function Samurai2DPlatformer() {
         if (floatingTexts[i].age >= floatingTexts[i].duration) floatingTexts.splice(i, 1)
       }
 
-      const distToShop = Math.hypot(char.x - SHOP_POS.x, char.y - SHOP_POS.y)
-      const isNearShop = distToShop <= SHOP_INTERACT_RADIUS
+      // Detect walking across continent borders in the unified open world!
+      const nearestContinent = getNearestContinent(char.x, char.y)
+      if (nearestContinent.id !== continentRef.current.id) {
+        const prevWeather = continentRef.current.weatherKind
+        continentRef.current = nearestContinent
+        setContinentId(nearestContinent.id)
+        if (prevWeather !== nearestContinent.weatherKind) {
+          spawnAmbientWeather(nearestContinent, cam.x, cam.y)
+        }
+        floatingTexts.push({
+          x: char.x,
+          y: char.y - 46,
+          text: `ENTERED · ${nearestContinent.name.toUpperCase()}`,
+          color: nearestContinent.badgeColor,
+          age: 0,
+          duration: 1.75,
+        })
+      }
+
+      const curContinent = continentRef.current
+      let nearShopId: ContinentId | null = null
+      for (const cont of CONTINENTS) {
+        if (Math.hypot(char.x - cont.shopPos.x, char.y - cont.shopPos.y) <= SHOP_INTERACT_RADIUS) {
+          nearShopId = cont.id
+          break
+        }
+      }
+      const isNearShop = nearShopId !== null
 
       // --- 3. STEP BOTH SAMURAI RIGS ---
       const topEvents = stepSamuraiTopDown(topRig, {
@@ -2723,16 +3637,41 @@ export default function Samurai2DPlatformer() {
       }
 
       // --- 4. STEP PARTICLES & 360° SLASH ARCS ---
+      const wk = curContinent.weatherKind
       for (let i = particles.length - 1; i >= 0; i--) {
         const pt = particles[i]
         pt.life += dt
-        if (pt.kind === 'leaf') {
-          pt.x += (pt.vx + Math.sin(elapsed * 1.3 + i) * 12) * dt
-          pt.y += (pt.vy + Math.cos(elapsed * 1.1 + i) * 8) * dt
-          pt.rot += pt.vrot * dt
-          if (Math.abs(pt.x - cam.x) > 820 || Math.abs(pt.y - cam.y) > 580) {
-            pt.x = cam.x + (Math.random() - 0.5) * 1300
-            pt.y = cam.y - 460 - Math.random() * 100
+        if (pt.kind === 'weather') {
+          if (wk === 'sand') {
+            pt.x += (pt.vx + Math.sin(elapsed * 2.2 + i) * 24) * dt
+            pt.y += (pt.vy + Math.cos(elapsed * 1.6 + i) * 10) * dt
+            if (pt.x - cam.x > 820 || Math.abs(pt.y - cam.y) > 580) {
+              pt.x = cam.x - 760 - Math.random() * 140
+              pt.y = cam.y + (Math.random() - 0.5) * 980
+            }
+          } else if (wk === 'ember') {
+            pt.x += (pt.vx + Math.sin(elapsed * 2.1 + i) * 16) * dt
+            pt.y += pt.vy * dt
+            if (pt.y - cam.y < -560 || Math.abs(pt.x - cam.x) > 820) {
+              pt.x = cam.x + (Math.random() - 0.5) * 1300
+              pt.y = cam.y + 460 + Math.random() * 100
+            }
+          } else if (wk === 'firefly') {
+            pt.x += (pt.vx + Math.sin(elapsed * 1.4 + i * 1.7) * 20) * dt
+            pt.y += (pt.vy + Math.cos(elapsed * 1.2 + i * 2.1) * 16) * dt
+            if (Math.abs(pt.x - cam.x) > 800 || Math.abs(pt.y - cam.y) > 560) {
+              pt.x = cam.x + (Math.random() - 0.5) * 1200
+              pt.y = cam.y + (Math.random() - 0.5) * 860
+            }
+          } else {
+            // leaf & snow gentle drift
+            pt.x += (pt.vx + Math.sin(elapsed * 1.3 + i) * (wk === 'snow' ? 16 : 12)) * dt
+            pt.y += (pt.vy + Math.cos(elapsed * 1.1 + i) * 8) * dt
+            pt.rot += pt.vrot * dt
+            if (Math.abs(pt.x - cam.x) > 820 || Math.abs(pt.y - cam.y) > 580) {
+              pt.x = cam.x + (Math.random() - 0.5) * 1300
+              pt.y = cam.y - 460 - Math.random() * 100
+            }
           }
           continue
         }
@@ -2759,7 +3698,7 @@ export default function Samurai2DPlatformer() {
         if (attackBoxes[i].age >= attackBoxes[i].duration) attackBoxes.splice(i, 1)
       }
 
-      // Step flying Samurai Arrows & check hits against Bamboo Dummies + solid obstacles (Trees, Rocks, Lanterns, Torii Pillars)!
+      // Step flying Samurai Arrows & check hits against Bamboo Dummies + solid continent obstacles!
       for (let i = arrowProjectiles.length - 1; i >= 0; i--) {
         const ar = arrowProjectiles[i]
         ar.age += dt
@@ -2775,51 +3714,48 @@ export default function Samurai2DPlatformer() {
           continue
         }
 
-        // Stop arrow harmlessly if it hits the wooden Merchant Stall
-        if (Math.abs(ar.x - SHOP_POS.x) < 42 && Math.abs(ar.y - SHOP_POS.y) < 28) {
-          spawnSlashSparks(ar.x, ar.y, ar.angle + Math.PI, 6)
-          arrowProjectiles.splice(i, 1)
-          continue
-        }
-
-        // Stop arrow if it strikes a solid Tree trunk, Zen Rock, Stone Lantern, or Torii Pillar!
-        if (showBgRef.current) {
-          let blocked = false
-          for (const tr of TREES) {
+        // Stop arrow if it strikes ANY continent's Merchant Stall, Tree/Cactus, Rock, Lantern, or Gate Pillar!
+        let blocked = false
+        for (const cont of CONTINENTS) {
+          if (Math.abs(ar.x - cont.origin.x) > 920 || Math.abs(ar.y - cont.origin.y) > 920) continue
+          if (Math.abs(ar.x - cont.shopPos.x) < 42 && Math.abs(ar.y - cont.shopPos.y) < 28) {
+            blocked = true
+            break
+          }
+          if (!showBgRef.current) continue
+          for (const tr of cont.trees) {
             if (Math.hypot(ar.x - tr.x, ar.y - tr.y) < getTreeColliderRadius(tr)) {
               blocked = true
               break
             }
           }
-          if (!blocked) {
-            for (const rk of ZEN_ROCKS) {
-              if (Math.hypot(ar.x - rk.x, ar.y - rk.y) < rk.r) {
-                blocked = true
-                break
-              }
+          if (blocked) break
+          for (const rk of cont.rocks) {
+            if (Math.hypot(ar.x - rk.x, ar.y - rk.y) < rk.r) {
+              blocked = true
+              break
             }
           }
-          if (!blocked) {
-            for (const ln of LANTERNS) {
-              if (Math.hypot(ar.x - ln.x, ar.y - ln.y) < 12) {
-                blocked = true
-                break
-              }
+          if (blocked) break
+          for (const ln of cont.lanterns) {
+            if (Math.hypot(ar.x - ln.x, ar.y - ln.y) < 12) {
+              blocked = true
+              break
             }
           }
-          if (!blocked) {
-            for (const tp of TORII_PILLARS) {
-              if (Math.hypot(ar.x - tp.x, ar.y - tp.y) < tp.r) {
-                blocked = true
-                break
-              }
+          if (blocked) break
+          for (const tp of getGatePillars(cont)) {
+            if (Math.hypot(ar.x - tp.x, ar.y - tp.y) < tp.r) {
+              blocked = true
+              break
             }
           }
-          if (blocked) {
-            spawnSlashSparks(ar.x, ar.y, ar.angle + Math.PI, 7)
-            arrowProjectiles.splice(i, 1)
-            continue
-          }
+          if (blocked) break
+        }
+        if (blocked) {
+          spawnSlashSparks(ar.x, ar.y, ar.angle + Math.PI, 7)
+          arrowProjectiles.splice(i, 1)
+          continue
         }
 
         let hitDummy = false
@@ -2859,8 +3795,8 @@ export default function Samurai2DPlatformer() {
       ctx.save()
       ctx.translate(W * 0.5 - cam.x, H * 0.5 - cam.y)
 
-      // Ground layer + Merchant Shop Counter + Coins + Dummies
-      drawBirdsEyeWorldGround(elapsed, isNearShop)
+      // Ground layer + Merchant Shop Outposts + Coins + Dummies across all visible continents
+      drawBirdsEyeWorldGround(elapsed, nearShopId, W, H)
 
       // Footstep dust & dash afterimages
       for (const pt of particles) {
@@ -3105,8 +4041,8 @@ export default function Samurai2DPlatformer() {
         ctx.stroke()
       }
 
-      // Overhead canopies, Torii roof & Merchant Shop Awning Banner
-      drawBirdsEyeOverhead(elapsed, isNearShop)
+      // Overhead canopies, Gates & Merchant Shop Awnings across all visible continents
+      drawBirdsEyeOverhead(elapsed, nearShopId, W, H)
 
       // Oriented Attack Boxes (always flashes crisply during attacks; full label when Hitbox toggle is ON)
       for (const ab of attackBoxes) {
@@ -3149,11 +4085,16 @@ export default function Samurai2DPlatformer() {
         ctx.fill()
         ctx.stroke()
 
-        // 2. Merchant Stall Collider Box
-        ctx.strokeStyle = '#d97706'
-        ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
-        ctx.fillRect(SHOP_POS.x - 40, SHOP_POS.y - 26, 80, 52)
-        ctx.strokeRect(SHOP_POS.x - 40, SHOP_POS.y - 26, 80, 52)
+        // 2. Merchant Stall Collider Boxes & Visible Continents Colliders
+        for (const cont of CONTINENTS) {
+          if (Math.abs(cont.origin.x - cam.x) > W * 0.5 + 950 || Math.abs(cont.origin.y - cam.y) > H * 0.5 + 950) {
+            continue
+          }
+          ctx.strokeStyle = '#d97706'
+          ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
+          ctx.fillRect(cont.shopPos.x - 40, cont.shopPos.y - 26, 80, 52)
+          ctx.strokeRect(cont.shopPos.x - 40, cont.shopPos.y - 26, 80, 52)
+        }
 
         // 3. Bamboo Dummy Hitboxes
         for (const dm of dummies) {
@@ -3177,62 +4118,58 @@ export default function Samurai2DPlatformer() {
         }
 
         if (showBgRef.current) {
-          // 5. Koi Pond Water No-Entry Collider
-          ctx.strokeStyle = '#0284c7'
-          ctx.fillStyle = 'rgba(2, 132, 199, 0.10)'
-          ctx.beginPath()
-          for (let i = 0; i <= 40; i++) {
-            const a = (i / 40) * Math.PI * 2
-            const pt = getPondBoundary(a)
-            if (i === 0) ctx.moveTo(pt.x, pt.y)
-            else ctx.lineTo(pt.x, pt.y)
-          }
-          ctx.closePath()
-          ctx.fill()
-          ctx.stroke()
+          for (const cont of CONTINENTS) {
+            if (Math.abs(cont.origin.x - cam.x) > W * 0.5 + 950 || Math.abs(cont.origin.y - cam.y) > H * 0.5 + 950) {
+              continue
+            }
+            // 5. Continent Liquid No-Entry Collider
+            ctx.strokeStyle = cont.liquidKind === 'magma' ? '#dc2626' : '#0284c7'
+            ctx.fillStyle = cont.liquidKind === 'magma' ? 'rgba(220, 38, 38, 0.12)' : 'rgba(2, 132, 199, 0.10)'
+            ctx.beginPath()
+            for (let i = 0; i <= 40; i++) {
+              const a = (i / 40) * Math.PI * 2
+              const pt = getContinentLiquidBoundary(cont, a)
+              if (i === 0) ctx.moveTo(pt.x, pt.y)
+              else ctx.lineTo(pt.x, pt.y)
+            }
+            ctx.closePath()
+            ctx.fill()
+            ctx.stroke()
 
-          // Wooden Bridge Safe Walkable Deck
-          ctx.strokeStyle = '#16a34a'
-          ctx.fillStyle = 'rgba(22, 163, 74, 0.10)'
-          ctx.fillRect(
-            BRIDGE_WALK.minX,
-            -BRIDGE_WALK.halfH,
-            BRIDGE_WALK.maxX - BRIDGE_WALK.minX,
-            BRIDGE_WALK.halfH * 2
-          )
-          ctx.strokeRect(
-            BRIDGE_WALK.minX,
-            -BRIDGE_WALK.halfH,
-            BRIDGE_WALK.maxX - BRIDGE_WALK.minX,
-            BRIDGE_WALK.halfH * 2
-          )
+            // Safe Walkable Bridge Deck
+            const br = cont.bridge
+            ctx.strokeStyle = '#16a34a'
+            ctx.fillStyle = 'rgba(22, 163, 74, 0.10)'
+            ctx.fillRect(br.minX, br.yCenter - br.halfH, br.maxX - br.minX, br.halfH * 2)
+            ctx.strokeRect(br.minX, br.yCenter - br.halfH, br.maxX - br.minX, br.halfH * 2)
 
-          // 6. Trees, Zen Rocks, Stone Lanterns, Torii Gate Pillars
-          ctx.strokeStyle = '#d97706'
-          ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
-          for (const tr of TREES) {
-            ctx.beginPath()
-            ctx.arc(tr.x, tr.y, getTreeColliderRadius(tr), 0, Math.PI * 2)
-            ctx.fill()
-            ctx.stroke()
-          }
-          for (const rk of ZEN_ROCKS) {
-            ctx.beginPath()
-            ctx.arc(rk.x, rk.y, rk.r, 0, Math.PI * 2)
-            ctx.fill()
-            ctx.stroke()
-          }
-          for (const ln of LANTERNS) {
-            ctx.beginPath()
-            ctx.arc(ln.x, ln.y, 12, 0, Math.PI * 2)
-            ctx.fill()
-            ctx.stroke()
-          }
-          for (const tp of TORII_PILLARS) {
-            ctx.beginPath()
-            ctx.arc(tp.x, tp.y, tp.r, 0, Math.PI * 2)
-            ctx.fill()
-            ctx.stroke()
+            // 6. Trees, Rocks, Lanterns, Gate Pillars
+            ctx.strokeStyle = '#d97706'
+            ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
+            for (const tr of cont.trees) {
+              ctx.beginPath()
+              ctx.arc(tr.x, tr.y, getTreeColliderRadius(tr), 0, Math.PI * 2)
+              ctx.fill()
+              ctx.stroke()
+            }
+            for (const rk of cont.rocks) {
+              ctx.beginPath()
+              ctx.arc(rk.x, rk.y, rk.r, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.stroke()
+            }
+            for (const ln of cont.lanterns) {
+              ctx.beginPath()
+              ctx.arc(ln.x, ln.y, 12, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.stroke()
+            }
+            for (const tp of getGatePillars(cont)) {
+              ctx.beginPath()
+              ctx.arc(tp.x, tp.y, tp.r, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.stroke()
+            }
           }
         }
         ctx.setLineDash([])
@@ -3251,26 +4188,63 @@ export default function Samurai2DPlatformer() {
         ctx.restore()
       }
 
-      // Drifting leaves
+      // Continent Ambient Weather (Drifting Leaves / Desert Sand / Falling Snow / Jungle Fireflies / Rising Embers)
       if (showBgRef.current) {
         for (const pt of particles) {
-          if (pt.kind !== 'leaf') continue
+          if (pt.kind !== 'weather') continue
           ctx.save()
           ctx.translate(pt.x, pt.y)
-          ctx.rotate(pt.rot)
-          ctx.strokeStyle = 'rgba(54, 53, 50, 0.34)'
-          ctx.lineWidth = 0.95
-          ctx.beginPath()
-          ctx.ellipse(0, 0, pt.size, pt.size * 0.44, 0, 0, Math.PI * 2)
-          ctx.stroke()
+          if (wk === 'sand') {
+            ctx.strokeStyle = 'rgba(176, 134, 72, 0.44)'
+            ctx.lineWidth = 1.15
+            ctx.beginPath()
+            ctx.moveTo(-pt.size, 0)
+            ctx.lineTo(pt.size, pt.size * 0.16)
+            ctx.stroke()
+          } else if (wk === 'snow') {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.88)'
+            ctx.strokeStyle = 'rgba(92, 122, 146, 0.42)'
+            ctx.lineWidth = 0.7
+            ctx.beginPath()
+            ctx.arc(0, 0, pt.size, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.stroke()
+          } else if (wk === 'firefly') {
+            const glowA = 0.4 + 0.45 * Math.sin(elapsed * 4.2 + pt.rot)
+            ctx.fillStyle = `rgba(218, 232, 114, ${glowA * 0.35})`
+            ctx.beginPath()
+            ctx.arc(0, 0, pt.size * 2.8, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.fillStyle = `rgba(246, 252, 178, ${glowA})`
+            ctx.beginPath()
+            ctx.arc(0, 0, pt.size * 0.85, 0, Math.PI * 2)
+            ctx.fill()
+          } else if (wk === 'ember') {
+            const flicker = 0.55 + 0.35 * Math.sin(elapsed * 6.5 + pt.rot)
+            ctx.fillStyle = `rgba(240, 126, 44, ${flicker * 0.42})`
+            ctx.beginPath()
+            ctx.arc(0, 0, pt.size * 2.2, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.fillStyle = `rgba(255, 210, 108, ${flicker})`
+            ctx.beginPath()
+            ctx.arc(0, 0, pt.size * 0.8, 0, Math.PI * 2)
+            ctx.fill()
+          } else {
+            ctx.rotate(pt.rot)
+            ctx.strokeStyle = 'rgba(54, 53, 50, 0.34)'
+            ctx.lineWidth = 0.95
+            ctx.beginPath()
+            ctx.ellipse(0, 0, pt.size, pt.size * 0.44, 0, 0, Math.PI * 2)
+            ctx.stroke()
+          }
           ctx.restore()
         }
       }
 
       ctx.restore()
 
-      // --- 6. LIVE SUMI-E COURTYARD MINIMAP (TOP-RIGHT CORNER WITH ACTUAL MINIATURE TREES!) ---
-      if (showMinimapRef.current && !shopOpenRef.current) {
+      // --- 6. LIVE PLAYER-CENTERED RADAR MINIMAP (TOP-RIGHT · CLICK TO OPEN FULL 5-CONTINENT WORLD MAP!) ---
+      if (showMinimapRef.current && !shopOpenRef.current && !fullMapOpenRef.current) {
         const mapW = 192
         const mapH = 178
         const mapX = W - mapW - 20
@@ -3282,38 +4256,65 @@ export default function Samurai2DPlatformer() {
         const mapCY = bodyY + bodyH * 0.5
         const worldSpanX = 1320
         const worldSpanY = 1120
-        const toMapX = (wx: number) => mapCX + (wx / worldSpanX) * (mapW - 14)
-        const toMapY = (wy: number) => mapCY + (wy / worldSpanY) * (bodyH - 12)
+        const scaleX = (mapW - 14) / worldSpanX
+        const scaleY = (bodyH - 12) / worldSpanY
+        const toMapX = (wx: number) => mapCX + (wx - char.x) * scaleX
+        const toMapY = (wy: number) => mapCY + (wy - char.y) * scaleY
         const white = isWhitePaper()
 
         ctx.save()
-        // Drop shadow
         ctx.fillStyle = 'rgba(26, 26, 30, 0.14)'
         ctx.fillRect(mapX + 3, mapY + 3, mapW, mapH)
 
-        // Parchment / board backdrop
-        ctx.fillStyle = white ? 'rgba(250, 247, 240, 0.94)' : 'rgba(176, 178, 172, 0.94)'
+        // Neutral world parchment backdrop
+        ctx.fillStyle = white ? '#f1ece1' : '#9ea19d'
         ctx.fillRect(mapX, mapY, mapW, mapH)
 
-        // Header bar
+        // Header bar with continent accent swatch + Click-for-Full-Map cue
         ctx.fillStyle = '#26262b'
         ctx.fillRect(mapX, mapY, mapW, headerH)
+        ctx.fillStyle = curContinent.badgeColor
+        ctx.fillRect(mapX, mapY, 4, headerH)
         ctx.fillStyle = '#faf7f0'
-        ctx.font = 'bold 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+        ctx.font = 'bold 8.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
         ctx.textAlign = 'left'
         ctx.textBaseline = 'middle'
-        ctx.fillText('COURTYARD MAP', mapX + 7, mapY + headerH * 0.5)
+        ctx.fillText(`${curContinent.shortName.toUpperCase()}`, mapX + 9, mapY + headerH * 0.5)
         ctx.textAlign = 'right'
         ctx.fillStyle = '#e5be62'
-        ctx.fillText('N ↑', mapX + mapW - 7, mapY + headerH * 0.5)
+        ctx.fillText('FULL MAP ⤢', mapX + mapW - 7, mapY + headerH * 0.5)
 
-        // Clipped minimap viewport
         ctx.save()
         ctx.beginPath()
         ctx.rect(mapX + 1, bodyY, mapW - 2, bodyH - 1)
         ctx.clip()
 
-        // Subtle ink gridlines
+        if (showBgRef.current) {
+          // Feathered continent biome territories visible in minimap radar
+          for (const cont of CONTINENTS) {
+            if (Math.abs(cont.origin.x - char.x) > 1500 || Math.abs(cont.origin.y - char.y) > 1400) continue
+            const ox = toMapX(cont.origin.x)
+            const oy = toMapY(cont.origin.y)
+            const rad = 820 * scaleX
+            const bgGrad = ctx.createRadialGradient(ox, oy, rad * 0.2, ox, oy, rad)
+            const hex = white ? cont.paperBase : cont.boardBase
+            bgGrad.addColorStop(0, hex)
+            bgGrad.addColorStop(0.75, hex)
+            bgGrad.addColorStop(1, 'rgba(241, 236, 225, 0)')
+            ctx.fillStyle = bgGrad
+            ctx.beginPath()
+            ctx.arc(ox, oy, rad, 0, Math.PI * 2)
+            ctx.fill()
+          }
+
+          // Connecting roads between continents
+          ctx.fillStyle = white ? 'rgba(138, 130, 114, 0.52)' : 'rgba(72, 74, 68, 0.52)'
+          for (const st of CONNECTOR_STONES) {
+            if (Math.abs(st.x - char.x) > 760 || Math.abs(st.y - char.y) > 680) continue
+            ctx.fillRect(toMapX(st.x) - 1.6, toMapY(st.y) - 1.4, 3.2, 2.8)
+          }
+        }
+
         ctx.strokeStyle = 'rgba(54, 53, 50, 0.08)'
         ctx.lineWidth = 0.75
         ctx.beginPath()
@@ -3324,189 +4325,269 @@ export default function Samurai2DPlatformer() {
         ctx.stroke()
 
         if (showBgRef.current) {
-          // Zen Gravel Garden patch (West) with raked gravel lines
-          const zx0 = toMapX(-470)
-          const zy0 = toMapY(-150)
-          const zw = toMapX(-180) - zx0
-          const zh = toMapY(150) - zy0
-          ctx.fillStyle = white ? 'rgba(196, 190, 174, 0.34)' : 'rgba(122, 124, 118, 0.34)'
-          ctx.fillRect(zx0, zy0, zw, zh)
-          ctx.strokeStyle = 'rgba(62, 60, 56, 0.16)'
-          ctx.lineWidth = 0.6
-          ctx.beginPath()
-          for (let ry = zy0 + 4; ry < zy0 + zh; ry += 5) {
-            ctx.moveTo(zx0, ry)
-            ctx.lineTo(zx0 + zw, ry)
-          }
-          ctx.stroke()
+          for (const cont of CONTINENTS) {
+            if (Math.abs(cont.origin.x - char.x) > 1350 || Math.abs(cont.origin.y - char.y) > 1250) continue
 
-          // Stepping stone courtyard pathways
-          ctx.fillStyle = white ? 'rgba(148, 142, 128, 0.42)' : 'rgba(92, 94, 88, 0.42)'
-          for (const st of STEPPING_STONES) {
-            ctx.fillRect(toMapX(st.x) - 1.6, toMapY(st.y) - 1.4, 3.2, 2.8)
-          }
-
-          // Koi Pond water contour with subtle depth gradient & lily pads!
-          ctx.beginPath()
-          for (let i = 0; i <= 32; i++) {
-            const a = (i / 32) * Math.PI * 2
-            const pt = getPondBoundary(a)
-            const px = toMapX(pt.x)
-            const py = toMapY(pt.y)
-            if (i === 0) ctx.moveTo(px, py)
-            else ctx.lineTo(px, py)
-          }
-          ctx.closePath()
-          const mpGrad = ctx.createRadialGradient(
-            toMapX(POND_CENTER.x),
-            toMapY(POND_CENTER.y),
-            3,
-            toMapX(POND_CENTER.x),
-            toMapY(POND_CENTER.y),
-            28
-          )
-          mpGrad.addColorStop(0, white ? '#5b7885' : '#324852')
-          mpGrad.addColorStop(1, white ? '#9bb4bc' : '#58717a')
-          ctx.fillStyle = mpGrad
-          ctx.fill()
-          ctx.strokeStyle = '#363532'
-          ctx.lineWidth = 0.95
-          ctx.stroke()
-
-          // Tiny floating lily pads on minimap pond
-          ctx.fillStyle = white ? '#9db28c' : '#6c7c66'
-          for (const [lx, ly] of [
-            [388, -72],
-            [318, 108],
-            [386, 118],
-          ]) {
-            ctx.beginPath()
-            ctx.arc(toMapX(lx), toMapY(ly), 1.8, 0, Math.PI * 2)
-            ctx.fill()
-          }
-
-          // Wooden Bridge crossing Koi Pond with wood plank ticks
-          const bx0 = toMapX(242)
-          const by0 = toMapY(-32)
-          const bw = toMapX(458) - bx0
-          const bh = toMapY(32) - by0
-          ctx.fillStyle = white ? '#d8c8ad' : '#9b9688'
-          ctx.fillRect(bx0, by0, bw, bh)
-          ctx.strokeStyle = '#363532'
-          ctx.lineWidth = 0.85
-          ctx.strokeRect(bx0, by0, bw, bh)
-
-          // North Shrine Torii Gate (pillars + top beam)
-          ctx.fillStyle = '#363532'
-          ctx.fillRect(toMapX(-88), toMapY(-396), toMapX(88) - toMapX(-88), 3.0)
-          ctx.fillRect(toMapX(-60), toMapY(-394), 2.4, 5.0)
-          ctx.fillRect(toMapX(52), toMapY(-394), 2.4, 5.0)
-
-          // Zen Rocks & Stone Lanterns
-          ctx.fillStyle = '#6c6a64'
-          for (const rk of ZEN_ROCKS) {
-            ctx.beginPath()
-            ctx.arc(toMapX(rk.x), toMapY(rk.y), 2.8, 0, Math.PI * 2)
-            ctx.fill()
-          }
-          ctx.fillStyle = '#54534f'
-          for (const ln of LANTERNS) {
-            ctx.fillRect(toMapX(ln.x) - 1.3, toMapY(ln.y) - 1.3, 2.6, 2.6)
-          }
-
-          // ACTUAL MINIATURE TREES ON THE MINIMAP (Real trunks, jagged pine boughs, leafy maples & bamboo stalks!)
-          for (const tr of TREES) {
-            const tx = toMapX(tr.x)
-            const ty = toMapY(tr.y)
-            ctx.save()
-            ctx.translate(tx, ty)
-            // Soft shadow
-            ctx.fillStyle = 'rgba(32, 36, 30, 0.18)'
-            ctx.beginPath()
-            ctx.ellipse(1.5, 1.5, 5.5, 3.2, 0, 0, Math.PI * 2)
-            ctx.fill()
-
-            if (tr.kind === 'bamboo') {
-              // Mini Bamboo Grove: 3 upright green culms + drooping leafy tops!
-              for (const [ox, h] of [
-                [-2.4, 7.5],
-                [0, 9.2],
-                [2.4, 7.0],
-              ]) {
-                ctx.strokeStyle = '#3c4a32'
-                ctx.lineWidth = 1.4
-                ctx.beginPath()
-                ctx.moveTo(ox, 1.2)
-                ctx.lineTo(ox * 1.15, -h)
-                ctx.stroke()
-                ctx.fillStyle = white ? '#8da372' : '#657a55'
-                ctx.beginPath()
-                ctx.ellipse(ox * 1.15, -h, 3.0, 1.8, 0, 0, Math.PI * 2)
-                ctx.fill()
-              }
-            } else if (tr.kind === 'pine') {
-              // Mini Real Pine Tree: brown wooden trunk + 3-tier jagged evergreen boughs!
-              ctx.fillStyle = '#5c4a39'
-              ctx.fillRect(-1.4, -4.5, 2.8, 6.0)
-              const tiers: [number, number, string][] = [
-                [-4.0, 6.2, white ? '#3f5241' : '#2d3b30'],
-                [-6.8, 5.0, white ? '#586e54' : '#40523f'],
-                [-9.4, 3.4, white ? '#758b6c' : '#566952'],
-              ]
-              for (const [cy, w, col] of tiers) {
-                ctx.fillStyle = col
-                ctx.beginPath()
-                ctx.moveTo(0, cy - 3.0)
-                ctx.lineTo(-w, cy + 1.8)
-                ctx.lineTo(-w * 0.45, cy + 1.1)
-                ctx.lineTo(0, cy + 2.2)
-                ctx.lineTo(w * 0.45, cy + 1.1)
-                ctx.lineTo(w, cy + 1.8)
-                ctx.closePath()
-                ctx.fill()
-                ctx.strokeStyle = 'rgba(32, 40, 32, 0.55)'
-                ctx.lineWidth = 0.6
-                ctx.stroke()
-              }
-            } else {
-              // Mini Real Broadleaf / Maple Tree: forked brown trunk + clustered organic autumn foliage!
-              ctx.fillStyle = '#57483e'
-              ctx.fillRect(-1.3, -4.8, 2.6, 6.0)
-              const puffs: [number, number, number, string][] = [
-                [-2.8, -5.8, 3.2, white ? '#6f3e34' : '#52302a'],
-                [2.8, -5.6, 3.2, white ? '#6f3e34' : '#52302a'],
-                [0, -7.2, 3.6, white ? '#964f3e' : '#723e32'],
-                [-1.0, -8.8, 2.6, white ? '#b86c4d' : '#8e543e'],
-              ]
-              for (const [px, py, pr, col] of puffs) {
-                ctx.fillStyle = col
-                ctx.beginPath()
-                ctx.arc(px, py, pr, 0, Math.PI * 2)
-                ctx.fill()
-              }
-              ctx.strokeStyle = 'rgba(46, 32, 28, 0.55)'
-              ctx.lineWidth = 0.65
-              ctx.beginPath()
-              ctx.arc(0, -6.8, 4.6, 0, Math.PI * 2)
-              ctx.stroke()
+            // Stepping stone pathways
+            ctx.fillStyle = white ? 'rgba(148, 142, 128, 0.42)' : 'rgba(92, 94, 88, 0.42)'
+            for (const st of cont.stones) {
+              ctx.fillRect(toMapX(st.x) - 1.6, toMapY(st.y) - 1.4, 3.2, 2.8)
             }
-            ctx.restore()
+
+            // Continent Liquid Body contour with matching realistic palette!
+            ctx.beginPath()
+            for (let i = 0; i <= 32; i++) {
+              const a = (i / 32) * Math.PI * 2
+              const pt = getContinentLiquidBoundary(cont, a)
+              const px = toMapX(pt.x)
+              const py = toMapY(pt.y)
+              if (i === 0) ctx.moveTo(px, py)
+              else ctx.lineTo(px, py)
+            }
+            ctx.closePath()
+            const mpGrad = ctx.createRadialGradient(
+              toMapX(cont.liquidCenter.x),
+              toMapY(cont.liquidCenter.y),
+              3,
+              toMapX(cont.liquidCenter.x),
+              toMapY(cont.liquidCenter.y),
+              28
+            )
+            if (cont.liquidKind === 'oasis') {
+              mpGrad.addColorStop(0, white ? '#3d8e9c' : '#265c66')
+              mpGrad.addColorStop(1, white ? '#94cfc8' : '#53898c')
+            } else if (cont.liquidKind === 'glacial-lake') {
+              mpGrad.addColorStop(0, white ? '#3b5d76' : '#253c4f')
+              mpGrad.addColorStop(1, white ? '#a4c4d6' : '#648294')
+            } else if (cont.liquidKind === 'emerald-lagoon') {
+              mpGrad.addColorStop(0, white ? '#2c6452' : '#1d4438')
+              mpGrad.addColorStop(1, white ? '#7db096' : '#4a735f')
+            } else if (cont.liquidKind === 'magma') {
+              mpGrad.addColorStop(0, '#f0b844')
+              mpGrad.addColorStop(0.6, '#d45b1c')
+              mpGrad.addColorStop(1, '#7a2518')
+            } else {
+              mpGrad.addColorStop(0, white ? '#5b7885' : '#324852')
+              mpGrad.addColorStop(1, white ? '#9bb4bc' : '#58717a')
+            }
+            ctx.fillStyle = mpGrad
+            ctx.fill()
+            ctx.strokeStyle = '#363532'
+            ctx.lineWidth = 0.95
+            ctx.stroke()
+
+            // Continent Bridge crossing liquid body
+            const br = cont.bridge
+            const bx0 = toMapX(br.minX + 4)
+            const by0 = toMapY(br.yCenter - 32)
+            const bw = toMapX(br.maxX - 4) - bx0
+            const bh = toMapY(br.yCenter + 32) - by0
+            ctx.fillStyle =
+              br.style === 'obsidian'
+                ? '#4b4542'
+                : br.style === 'frost'
+                  ? '#e6f1f6'
+                  : br.style === 'bamboo'
+                    ? '#b8c498'
+                    : white
+                      ? '#d8c8ad'
+                      : '#9b9688'
+            ctx.fillRect(bx0, by0, bw, bh)
+            ctx.strokeStyle = '#363532'
+            ctx.lineWidth = 0.85
+            ctx.strokeRect(bx0, by0, bw, bh)
+
+            // North Gate
+            ctx.fillStyle = '#363532'
+            const gx0 = toMapX(cont.gatePos.x - 88)
+            const gx1 = toMapX(cont.gatePos.x + 88)
+            const gy = toMapY(cont.gatePos.y - 6)
+            ctx.fillRect(gx0, gy, gx1 - gx0, 3.0)
+            ctx.fillRect(toMapX(cont.gatePos.x - 60), gy + 2, 2.4, 5.0)
+            ctx.fillRect(toMapX(cont.gatePos.x + 52), gy + 2, 2.4, 5.0)
+
+            // Rocks & Lanterns
+            for (const rk of cont.rocks) {
+              ctx.fillStyle =
+                rk.kind === 'ice'
+                  ? '#a4cbd9'
+                  : rk.kind === 'sandstone'
+                    ? '#c69e68'
+                    : rk.kind === 'basalt'
+                      ? '#433d3a'
+                      : '#6c6a64'
+              ctx.beginPath()
+              ctx.arc(toMapX(rk.x), toMapY(rk.y), 2.8, 0, Math.PI * 2)
+              ctx.fill()
+            }
+            ctx.fillStyle = '#54534f'
+            for (const ln of cont.lanterns) {
+              ctx.fillRect(toMapX(ln.x) - 1.3, toMapY(ln.y) - 1.3, 2.6, 2.6)
+            }
+
+            // ACTUAL MINIATURE TREES ON THE MINIMAP (All 8 Botanical Species!)
+            for (const tr of cont.trees) {
+              const tx = toMapX(tr.x)
+              const ty = toMapY(tr.y)
+              if (tx < mapX - 12 || tx > mapX + mapW + 12 || ty < bodyY - 12 || ty > mapY + mapH + 12) continue
+              ctx.save()
+              ctx.translate(tx, ty)
+              ctx.fillStyle = 'rgba(32, 36, 30, 0.18)'
+              ctx.beginPath()
+              ctx.ellipse(1.5, 1.5, 5.2, 3.0, 0, 0, Math.PI * 2)
+              ctx.fill()
+
+              if (tr.kind === 'bamboo') {
+                for (const [ox, h] of [
+                  [-2.4, 7.5],
+                  [0, 9.2],
+                  [2.4, 7.0],
+                ]) {
+                  ctx.strokeStyle = '#3c4a32'
+                  ctx.lineWidth = 1.4
+                  ctx.beginPath()
+                  ctx.moveTo(ox, 1.2)
+                  ctx.lineTo(ox * 1.15, -h)
+                  ctx.stroke()
+                  ctx.fillStyle = white ? '#8da372' : '#657a55'
+                  ctx.beginPath()
+                  ctx.ellipse(ox * 1.15, -h, 3.0, 1.8, 0, 0, Math.PI * 2)
+                  ctx.fill()
+                }
+              } else if (tr.kind === 'palm') {
+                ctx.strokeStyle = '#6e563b'
+                ctx.lineWidth = 1.8
+                ctx.beginPath()
+                ctx.moveTo(0, 1.5)
+                ctx.quadraticCurveTo(1.5, -4, 2.2, -8.5)
+                ctx.stroke()
+                ctx.strokeStyle = white ? '#628549' : '#466134'
+                ctx.lineWidth = 1.25
+                for (let f = 0; f < 6; f++) {
+                  const fa = (f / 6) * Math.PI * 2
+                  ctx.beginPath()
+                  ctx.moveTo(2.2, -8.5)
+                  ctx.quadraticCurveTo(
+                    2.2 + Math.cos(fa) * 3.5,
+                    -9.5 + Math.sin(fa) * 2,
+                    2.2 + Math.cos(fa) * 5.8,
+                    -7.2 + Math.sin(fa) * 3.2
+                  )
+                  ctx.stroke()
+                }
+              } else if (tr.kind === 'cactus') {
+                ctx.strokeStyle = white ? '#5f7e4e' : '#445d39'
+                ctx.lineCap = 'round'
+                ctx.lineWidth = 2.6
+                ctx.beginPath()
+                ctx.moveTo(0, 1.5)
+                ctx.lineTo(0, -8.5)
+                ctx.stroke()
+                ctx.lineWidth = 1.7
+                ctx.beginPath()
+                ctx.moveTo(0, -3.5)
+                ctx.lineTo(-3.2, -3.5)
+                ctx.lineTo(-3.2, -6.5)
+                ctx.moveTo(0, -5.0)
+                ctx.lineTo(3.0, -5.0)
+                ctx.lineTo(3.0, -7.5)
+                ctx.stroke()
+              } else if (tr.kind === 'pine' || tr.kind === 'snow-pine') {
+                const isSnow = tr.kind === 'snow-pine'
+                ctx.fillStyle = '#5c4a39'
+                ctx.fillRect(-1.4, -4.5, 2.8, 6.0)
+                const tiers: [number, number, string][] = isSnow
+                  ? [
+                      [-4.0, 6.2, white ? '#364d52' : '#26383d'],
+                      [-6.8, 5.0, white ? '#517178' : '#3a545a'],
+                      [-9.4, 3.6, white ? '#eff7fb' : '#cde0ea'],
+                    ]
+                  : [
+                      [-4.0, 6.2, white ? '#3f5241' : '#2d3b30'],
+                      [-6.8, 5.0, white ? '#586e54' : '#40523f'],
+                      [-9.4, 3.4, white ? '#758b6c' : '#566952'],
+                    ]
+                for (const [cy, w, col] of tiers) {
+                  ctx.fillStyle = col
+                  ctx.beginPath()
+                  ctx.moveTo(0, cy - 3.0)
+                  ctx.lineTo(-w, cy + 1.8)
+                  ctx.lineTo(-w * 0.45, cy + 1.1)
+                  ctx.lineTo(0, cy + 2.2)
+                  ctx.lineTo(w * 0.45, cy + 1.1)
+                  ctx.lineTo(w, cy + 1.8)
+                  ctx.closePath()
+                  ctx.fill()
+                  ctx.strokeStyle = 'rgba(32, 40, 32, 0.55)'
+                  ctx.lineWidth = 0.6
+                  ctx.stroke()
+                }
+              } else if (tr.kind === 'charred') {
+                ctx.strokeStyle = '#2a2422'
+                ctx.lineWidth = 1.9
+                ctx.beginPath()
+                ctx.moveTo(0, 1.5)
+                ctx.lineTo(0, -6.5)
+                ctx.moveTo(0, -4.5)
+                ctx.lineTo(-3.8, -8.5)
+                ctx.moveTo(0, -5.0)
+                ctx.lineTo(3.6, -8.8)
+                ctx.stroke()
+                ctx.fillStyle = '#a84426'
+                ctx.beginPath()
+                ctx.arc(-3.2, -8.2, 2.0, 0, Math.PI * 2)
+                ctx.arc(3.0, -8.4, 1.9, 0, Math.PI * 2)
+                ctx.fill()
+              } else {
+                const isJungle = tr.kind === 'jungle'
+                ctx.fillStyle = '#57483e'
+                ctx.fillRect(-1.3, -4.8, 2.6, 6.0)
+                const puffs: [number, number, number, string][] = isJungle
+                  ? [
+                      [-2.8, -5.8, 3.3, white ? '#2e583b' : '#20402b'],
+                      [2.8, -5.6, 3.3, white ? '#2e583b' : '#20402b'],
+                      [0, -7.2, 3.8, white ? '#467c4f' : '#325b3a'],
+                      [-1.0, -8.8, 2.8, white ? '#69a263' : '#4b7847'],
+                    ]
+                  : [
+                      [-2.8, -5.8, 3.2, white ? '#6f3e34' : '#52302a'],
+                      [2.8, -5.6, 3.2, white ? '#6f3e34' : '#52302a'],
+                      [0, -7.2, 3.6, white ? '#964f3e' : '#723e32'],
+                      [-1.0, -8.8, 2.6, white ? '#b86c4d' : '#8e543e'],
+                    ]
+                for (const [px, py, pr, col] of puffs) {
+                  ctx.fillStyle = col
+                  ctx.beginPath()
+                  ctx.arc(px, py, pr, 0, Math.PI * 2)
+                  ctx.fill()
+                }
+                ctx.strokeStyle = isJungle ? 'rgba(26, 46, 30, 0.55)' : 'rgba(46, 32, 28, 0.55)'
+                ctx.lineWidth = 0.65
+                ctx.beginPath()
+                ctx.arc(0, -6.8, 4.6, 0, Math.PI * 2)
+                ctx.stroke()
+              }
+              ctx.restore()
+            }
           }
         }
 
-        // Merchant Shop Stall icon (crimson roof square + 'S')
-        const sx = toMapX(SHOP_POS.x)
-        const sy = toMapY(SHOP_POS.y)
-        ctx.fillStyle = '#b84239'
-        ctx.fillRect(sx - 5.5, sy - 4.5, 11, 9)
-        ctx.strokeStyle = '#26262b'
-        ctx.lineWidth = 1.0
-        ctx.strokeRect(sx - 5.5, sy - 4.5, 11, 9)
-        ctx.fillStyle = '#faf7f0'
-        ctx.font = 'bold 7.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('S', sx, sy + 0.5)
+        // Merchant Shop Stall icons across all nearby continents
+        for (const cont of CONTINENTS) {
+          const sx = toMapX(cont.shopPos.x)
+          const sy = toMapY(cont.shopPos.y)
+          if (sx < mapX - 10 || sx > mapX + mapW + 10 || sy < bodyY - 10 || sy > mapY + mapH + 10) continue
+          ctx.fillStyle = '#b84239'
+          ctx.fillRect(sx - 5.5, sy - 4.5, 11, 9)
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 1.0
+          ctx.strokeRect(sx - 5.5, sy - 4.5, 11, 9)
+          ctx.fillStyle = '#faf7f0'
+          ctx.font = 'bold 7.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText('S', sx, sy + 0.5)
+        }
 
         // Collectible Gold Coins
         for (const c of mapCoins) {
@@ -3584,6 +4665,7 @@ export default function Samurai2DPlatformer() {
           speed: Math.round(Math.hypot(char.vx, char.vy)),
           x: Math.round(char.x),
           y: Math.round(char.y),
+          heading: topRig.heading,
           fps: Math.round(fpsSmooth),
           nearShop: isNearShop,
           focusSec: Math.ceil(focusTimerRef.current),
@@ -3611,18 +4693,18 @@ export default function Samurai2DPlatformer() {
 
   return (
     <div
-      className={`relative w-screen h-screen overflow-hidden select-none font-mono ${
-        paperTone === 'white' ? 'bg-[#f7f3ec] text-[#222226]' : 'bg-[#a9aba8] text-[#222226]'
-      }`}
+      className="relative w-screen h-screen overflow-hidden select-none font-mono text-[#222226]"
+      style={{ backgroundColor: paperTone === 'white' ? activeContinent.paperBase : activeContinent.boardBase }}
     >
       <canvas
         ref={canvasRef}
         onPointerDown={(e) => {
           if (e.button === 0) {
+            if (shopOpen || fullMapOpen) return
             const rect = e.currentTarget.getBoundingClientRect()
             const localX = e.clientX - rect.left
             const localY = e.clientY - rect.top
-            // Ignore clicks inside the top-right Courtyard Minimap
+            // Clicking inside the top-right Minimap opens the Full-View 5-Continent World Map!
             if (
               showMinimap &&
               localX >= rect.width - 212 &&
@@ -3630,16 +4712,19 @@ export default function Samurai2DPlatformer() {
               localY >= 16 &&
               localY <= 194
             ) {
+              setFullMapOpen(true)
               return
             }
             const clickScreenX = localX - rect.width * 0.5
             const clickScreenY = localY - rect.height * 0.5
             const worldClickX = hudStats.x + clickScreenX
             const worldClickY = hudStats.y + clickScreenY
-            // If clicking directly on the Merchant Stall on the map, open the Shop!
-            if (Math.hypot(worldClickX - SHOP_POS.x, worldClickY - SHOP_POS.y) < 72) {
-              setShopOpen(true)
-              return
+            // If clicking directly on ANY continent's Merchant Stall on the map, open the Shop!
+            for (const cont of CONTINENTS) {
+              if (Math.hypot(worldClickX - cont.shopPos.x, worldClickY - cont.shopPos.y) < 72) {
+                setShopOpen(true)
+                return
+              }
             }
             triggerSlashRef.current?.(Math.atan2(clickScreenY, clickScreenX))
           }
@@ -3647,16 +4732,72 @@ export default function Samurai2DPlatformer() {
         className="w-full h-full block cursor-crosshair"
       />
 
-      {/* Minimalist Top Bar */}
+      {/* Clickable Transparent Overlay over Top-Right Minimap for pointer cursor & Full-View Map trigger */}
+      {showMinimap && !shopOpen && !fullMapOpen && (
+        <button
+          type="button"
+          onClick={() => setFullMapOpen(true)}
+          aria-label="Open Full-View 5-Continent World Map"
+          title="Click to open Full-View 5-Continent World Map [M]"
+          className="absolute top-[16px] right-[20px] w-[192px] h-[178px] z-30 cursor-pointer bg-transparent hover:ring-2 hover:ring-[#e5be62] transition-shadow"
+        />
+      )}
+
+      {/* Minimalist Top Bar + 5-Continent Walk/Teleport Bar */}
       <div className="pointer-events-none absolute top-4 left-5 right-5 flex items-start justify-between z-20 gap-3">
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+        <div className="pointer-events-auto flex flex-col gap-1.5 max-w-[680px]">
           <div className="px-3.5 py-2 bg-white/85 backdrop-blur-sm border border-[#26262b]">
-            <div className="text-[10px] uppercase tracking-[0.22em] font-bold">
-              2D BIRD&apos;S-EYE SAMURAI // COURTYARD &amp; MERCHANT SHOP
+            <div className="text-[10px] uppercase tracking-[0.2em] font-bold flex items-center gap-2 flex-wrap">
+              <span>2D SAMURAI // {activeContinent.name.toUpperCase()}</span>
+              <span
+                className="px-1.5 py-0.5 text-[9px] text-white font-bold tracking-wider"
+                style={{ backgroundColor: activeContinent.badgeColor }}
+              >
+                {activeContinent.regionTag}
+              </span>
             </div>
             <div className="text-[11px] text-[#45454a] mt-0.5">
-              W/A/S/D: Move · Space: Dash · J / Click: {activeWeapon === 'bow' ? 'Shoot Bow' : 'Slash'} · Q: Switch Weapon · E / Click Stall: Shop · R: Center
+              W/A/S/D: Walk Roads · Space: Dash · Click / J: {activeWeapon === 'bow' ? 'Bow' : 'Slash'} · Q: Switch · 1–5: Teleport · M / Click Map: Full World
             </div>
+          </div>
+
+          {/* 5-Continent Fast-Teleport + Full Map Bar */}
+          <div className="flex flex-wrap items-center gap-1 bg-white/85 backdrop-blur-sm border border-[#26262b] px-2 py-1.5">
+            <span className="text-[9px] uppercase tracking-widest font-bold text-[#5a5a60] mr-1">
+              TELEPORT
+            </span>
+            {CONTINENTS.map((cont) => {
+              const isActive = cont.id === continentId
+              return (
+                <button
+                  key={cont.id}
+                  type="button"
+                  onClick={() => switchContinentRef.current?.(cont.id)}
+                  className={`px-2 py-0.5 text-[10px] uppercase border transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    isActive
+                      ? 'bg-[#26262b] border-[#26262b] text-[#faf7f0] font-bold'
+                      : 'bg-white/80 border-[#26262b]/35 hover:border-[#26262b] text-[#26262b]'
+                  }`}
+                  title={`Teleport to ${cont.name} (${cont.regionTag}) [Key ${cont.keyNum}] — or walk there on foot!`}
+                >
+                  <span
+                    className="inline-block w-2 h-2 rounded-full"
+                    style={{ backgroundColor: cont.badgeColor }}
+                  />
+                  <span>
+                    [{cont.keyNum}] {cont.shortName}
+                  </span>
+                </button>
+              )
+            })}
+            <button
+              type="button"
+              onClick={() => setFullMapOpen(true)}
+              className="ml-auto px-2 py-0.5 text-[10px] uppercase border border-[#26262b] bg-[#e5be62] hover:bg-[#d6ae50] text-[#222226] font-extrabold transition-colors cursor-pointer"
+              title="Open Full-View 5-Continent World Map [M]"
+            >
+              World Map [M]
+            </button>
           </div>
         </div>
 
@@ -3686,7 +4827,7 @@ export default function Samurai2DPlatformer() {
                 ? `FOCUS RUSH: ${hudStats.focusSec}s`
                 : hudStats.nearShop
                   ? 'Press [E] or Click to Browse'
-                  : 'Stall at NW Plaza (-135, -110)'}
+                  : `Stall at NW (${activeContinent.shopPos.x}, ${activeContinent.shopPos.y})`}
             </div>
           </button>
 
@@ -3721,6 +4862,20 @@ export default function Samurai2DPlatformer() {
             setShopMsg('Added +100 Gold to your pouch!')
           }}
           onClose={() => setShopOpen(false)}
+        />
+      )}
+
+      {/* FULL-VIEW INTERACTIVE 5-CONTINENT WORLD MAP OVERLAY (CLICK MINIMAP OR PRESS [M]!) */}
+      {fullMapOpen && (
+        <FullWorldMapModal
+          paperTone={paperTone}
+          playerX={hudStats.x}
+          playerY={hudStats.y}
+          playerHeading={hudStats.heading}
+          activeContinentId={continentId}
+          onTeleportWorld={(wx, wy, label, color) => teleportWorldRef.current?.(wx, wy, label, color)}
+          onTeleportContinent={(id) => switchContinentRef.current?.(id)}
+          onClose={() => setFullMapOpen(false)}
         />
       )}
 
