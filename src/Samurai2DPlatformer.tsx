@@ -19,16 +19,24 @@ import FullWorldMapModal from './FullWorldMapModal'
 import {
   CONNECTOR_STONES,
   CONTINENTS,
-  ROAD_SIGNPOSTS,
-  WORLD_LIMIT,
+  MYSTERIOUS_STATUES,
+  WAYSHRINE_UNLOCK_RADIUS,
+  WAYSTATIONS,
+  WILDERNESS_POOLS,
+  WILDERNESS_ROCKS,
+  WORLD_LIMIT_X,
+  WORLD_LIMIT_Y,
   getContinentById,
   getContinentLiquidBoundary,
   getNearestContinent,
   getTreeColliderRadius,
+  getWildernessPoolBoundary,
   hash1,
   handDrift,
+  queryTreesInRect,
   type ContinentConfig,
   type ContinentId,
+  type MysteriousStatue,
 } from './continents'
 
 type LockedMode = 'Idle' | 'Walk' | 'Run' | null
@@ -139,6 +147,22 @@ export default function Samurai2DPlatformer() {
   const virtualRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 })
 
   const [continentId, setContinentId] = useState<ContinentId>('kyoto')
+  const [discoveredContinents, setDiscoveredContinents] = useState<Record<ContinentId, boolean>>({
+    kyoto: true,
+    desert: false,
+    jungle: false,
+    frost: false,
+    volcano: false,
+  })
+  const [scoutUnlockAll, setScoutUnlockAll] = useState(false)
+  const [completedStatues, setCompletedStatues] = useState<Record<string, boolean>>({})
+  const [activeStatueTaskHud, setActiveStatueTaskHud] = useState<{
+    prompt: string
+    broken: number
+    total: number
+    timeLeft: number
+    rewardGold: number
+  } | null>(null)
   const [fullMapOpen, setFullMapOpen] = useState(false)
   const [animState, setAnimState] = useState<SamuraiAnimMode>('Idle')
   const [lockedMode, setLockedMode] = useState<LockedMode>(null)
@@ -154,8 +178,8 @@ export default function Samurai2DPlatformer() {
   const [speedScale, setSpeedScale] = useState(1.0)
   const [hudStats, setHudStats] = useState({
     speed: 0,
-    x: 0,
-    y: 0,
+    x: CONTINENTS[0].origin.x,
+    y: CONTINENTS[0].origin.y,
     heading: Math.PI,
     fps: 60,
     nearShop: false,
@@ -173,6 +197,16 @@ export default function Samurai2DPlatformer() {
 
   const activeContinent = getContinentById(continentId)
   const continentRef = useRef<ContinentConfig>(CONTINENTS[0])
+  const discoveredRef = useRef<Record<ContinentId, boolean>>({
+    kyoto: true,
+    desert: false,
+    jungle: false,
+    frost: false,
+    volcano: false,
+  })
+  const scoutUnlockRef = useRef(false)
+  const completedStatuesRef = useRef<Record<string, boolean>>({})
+  const interactStatueRef = useRef<((st: MysteriousStatue) => void) | null>(null)
   const fullMapOpenRef = useRef(false)
   const switchContinentRef = useRef<((id: ContinentId) => void) | null>(null)
   const teleportWorldRef = useRef<((wx: number, wy: number, label?: string, color?: string) => void) | null>(null)
@@ -215,6 +249,9 @@ export default function Samurai2DPlatformer() {
   useEffect(() => { speedScaleRef.current = speedScale }, [speedScale])
   useEffect(() => { shopOpenRef.current = shopOpen }, [shopOpen])
   useEffect(() => { fullMapOpenRef.current = fullMapOpen }, [fullMapOpen])
+  useEffect(() => { discoveredRef.current = discoveredContinents }, [discoveredContinents])
+  useEffect(() => { scoutUnlockRef.current = scoutUnlockAll }, [scoutUnlockAll])
+  useEffect(() => { completedStatuesRef.current = completedStatues }, [completedStatues])
   useEffect(() => { gearRef.current = equippedGear }, [equippedGear])
   useEffect(() => { bowUnlockedRef.current = Boolean(ownedItems.warBow) }, [ownedItems])
   useEffect(() => { activeWeaponRef.current = activeWeapon }, [activeWeapon])
@@ -318,9 +355,10 @@ export default function Samurai2DPlatformer() {
       return paperPatterns.get(hex) ?? null
     }
 
+    const startOrigin = CONTINENTS[0].origin
     const char = {
-      x: 0,
-      y: 0,
+      x: startOrigin.x,
+      y: startOrigin.y,
       vx: 0,
       vy: 0,
       heading: Math.PI,
@@ -336,9 +374,9 @@ export default function Samurai2DPlatformer() {
       dashCooldown: 0,
     }
 
-    const topRig = createSamuraiTopDownRig(0, 0, char.heading)
-    const sideRig = createSamuraiRig(0, 0, char.facing)
-    const cam = { x: 0, y: 0 }
+    const topRig = createSamuraiTopDownRig(startOrigin.x, startOrigin.y, char.heading)
+    const sideRig = createSamuraiRig(startOrigin.x, startOrigin.y, char.facing)
+    const cam = { x: startOrigin.x, y: startOrigin.y }
 
     const particles: Particle[] = []
     const slashArcs: SlashArc[] = []
@@ -348,6 +386,71 @@ export default function Samurai2DPlatformer() {
 
     const mapCoins: MapCoin[] = []
     const dummies: BambooDummy[] = []
+    // Active Ancient Statue Trial State (spawns 3 Cursed Spirit Effigies around an Unrecognized Statue!)
+    let activeStatueTrial: {
+      statue: MysteriousStatue
+      timeLeft: number
+      effigies: { x: number; y: number; alive: boolean; phase: number }[]
+    } | null = null
+
+    const startStatueTrial = (st: MysteriousStatue) => {
+      if (completedStatuesRef.current[st.id]) {
+        floatingTexts.push({
+          x: st.x,
+          y: st.y - 52,
+          text: `★ ${st.trueName.toUpperCase()} (ALREADY CLEANSED)`,
+          color: '#9b7428',
+          age: 0,
+          duration: 1.5,
+        })
+        return
+      }
+      const effigies: { x: number; y: number; alive: boolean; phase: number }[] = []
+      for (let i = 0; i < 3; i++) {
+        const ang = -Math.PI * 0.5 + (i / 3) * Math.PI * 2 + 0.35
+        effigies.push({
+          x: st.x + Math.cos(ang) * 112,
+          y: st.y + Math.sin(ang) * 96,
+          alive: true,
+          phase: i * 2.1,
+        })
+      }
+      activeStatueTrial = {
+        statue: st,
+        timeLeft: 24.0,
+        effigies,
+      }
+      spawnSlashSparks(st.x, st.y - 18, -Math.PI * 0.5, 18)
+      floatingTexts.push({
+        x: st.x,
+        y: st.y - 58,
+        text: `❓ STATUE AWAKENED · ${st.taskPrompt.toUpperCase()}!`,
+        color: '#6b3fa0',
+        age: 0,
+        duration: 2.2,
+      })
+    }
+    interactStatueRef.current = startStatueTrial
+
+    const completeStatueTrialIfDone = () => {
+      if (!activeStatueTrial) return
+      if (activeStatueTrial.effigies.some((ef) => ef.alive)) return
+      const st = activeStatueTrial.statue
+      activeStatueTrial = null
+      const nextDone = { ...completedStatuesRef.current, [st.id]: true }
+      completedStatuesRef.current = nextDone
+      setCompletedStatues(nextDone)
+      addCoinsRef.current(st.rewardGold)
+      spawnSlashSparks(st.x, st.y - 20, -Math.PI * 0.5, 28)
+      floatingTexts.push({
+        x: st.x,
+        y: st.y - 62,
+        text: `★ STATUE RECOGNIZED: ${st.trueName.toUpperCase()} · +${st.rewardGold} GOLD!`,
+        color: '#b84239',
+        age: 0,
+        duration: 2.8,
+      })
+    }
 
     const spawnAmbientWeather = (cur: ContinentConfig, centerX = cam.x, centerY = cam.y) => {
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -398,7 +501,7 @@ export default function Samurai2DPlatformer() {
       }
     }
 
-    // Populate ALL 5 Continents' Gold Coins & Bamboo Dummies into the single unified open world!
+    // Populate ALL 5 Continents' + 6 Midway Waystations' Gold Coins & Bamboo Dummies!
     for (const cont of CONTINENTS) {
       for (const c of cont.coins) {
         mapCoins.push({
@@ -414,7 +517,19 @@ export default function Samurai2DPlatformer() {
         dummies.push({ x: d.x, y: d.y, cutTimer: 0, hitAngle: 0 })
       }
     }
-    spawnAmbientWeather(continentRef.current, 0, 0)
+    for (let wIdx = 0; wIdx < WAYSTATIONS.length; wIdx++) {
+      const ws = WAYSTATIONS[wIdx]
+      mapCoins.push({
+        x: ws.x - 42,
+        y: ws.y + 34,
+        value: 25,
+        collected: false,
+        respawnTimer: 0,
+        phase: wIdx * 1.1,
+      })
+      dummies.push({ x: ws.x + 54, y: ws.y + 28, cutTimer: 0, hitAngle: 0 })
+    }
+    spawnAmbientWeather(continentRef.current, startOrigin.x, startOrigin.y)
 
     const spawnFootDust = (x: number, y: number, heading: number, count: number, boost = 1) => {
       const bx = -Math.cos(heading)
@@ -576,13 +691,38 @@ export default function Samurai2DPlatformer() {
           spawnSlashSparks(dm.x, dm.y, char.heading, 16)
         }
       }
+      // Also check Cursed Spirit Effigies summoned by an active Unrecognized Statue Task!
+      if (activeStatueTrial) {
+        for (const ef of activeStatueTrial.effigies) {
+          if (!ef.alive) continue
+          const ddx = ef.x - atkBox.x
+          const ddy = ef.y - atkBox.y
+          const localX = ddx * cosA - ddy * sinA
+          const localY = ddx * sinA + ddy * cosA
+          if (localX >= -10 && localX <= atkBox.length + 14 && Math.abs(localY) <= atkBox.halfWidth + 14) {
+            atkBox.hit = true
+            ef.alive = false
+            spawnSlashSparks(ef.x, ef.y, char.heading, 20)
+            const brokenCount = activeStatueTrial.effigies.filter((e) => !e.alive).length
+            floatingTexts.push({
+              x: ef.x,
+              y: ef.y - 20,
+              text: `CURSED EFFIGY SHATTERED (${brokenCount}/3)!`,
+              color: '#6b3fa0',
+              age: 0,
+              duration: 1.25,
+            })
+          }
+        }
+        completeStatueTrialIfDone()
+      }
       attackBoxes.push(atkBox)
     }
 
-    // Unified solid collision resolver across ALL 5 Continents in one seamless world!
+    // Unified solid collision resolver across ALL 5 Continents + Dense Forests, Water Pools & Statues!
     const resolveWorldCollisions = (x: number, y: number, prevX: number, prevY: number): Vec2 => {
-      let cx = clamp(x, -WORLD_LIMIT, WORLD_LIMIT)
-      let cy = clamp(y, -WORLD_LIMIT, WORLD_LIMIT)
+      let cx = clamp(x, -WORLD_LIMIT_X, WORLD_LIMIT_X)
+      let cy = clamp(y, -WORLD_LIMIT_Y, WORLD_LIMIT_Y)
 
       const pushOutCircle = (ox: number, oy: number, rad: number) => {
         const dx = cx - ox
@@ -614,22 +754,25 @@ export default function Samurai2DPlatformer() {
         }
       }
 
-      // 1. Intact Bamboo Training Dummies across the world
+      // 1. Intact Bamboo Training Dummies & Active Statue Effigies
       for (const dm of dummies) {
         if (dm.cutTimer <= 0 && Math.abs(cx - dm.x) < 40 && Math.abs(cy - dm.y) < 40) {
           pushOutCircle(dm.x, dm.y, 11)
         }
       }
+      if (activeStatueTrial) {
+        for (const ef of activeStatueTrial.effigies) {
+          if (ef.alive) pushOutCircle(ef.x, ef.y, 13)
+        }
+      }
 
-      // 2. Check all nearby continents (fast bounding-box cull!)
+      // 2. Check nearby Continents (Merchants, Liquids, Bridges, Rocks, Lanterns, Gates)
       for (const cur of CONTINENTS) {
-        if (Math.abs(cx - cur.origin.x) > 920 || Math.abs(cy - cur.origin.y) > 920) continue
+        if (Math.abs(cx - cur.origin.x) > 1350 || Math.abs(cy - cur.origin.y) > 1350) continue
 
-        // Merchant Stall counter (always solid)
         pushOutRect(cur.shopPos.x, cur.shopPos.y, 40, 26)
 
         if (showBgRef.current) {
-          // Continent Liquid (Pond / Oasis / Glacial Lake / Lagoon / Magma) & Walkable Bridge Deck
           const br = cur.bridge
           const wasOnBridge =
             prevX >= br.minX &&
@@ -666,31 +809,64 @@ export default function Samurai2DPlatformer() {
             }
           }
 
-          // Trees & Cacti
-          for (const tr of cur.trees) {
-            pushOutCircle(tr.x, tr.y, getTreeColliderRadius(tr))
-          }
-
-          // Rocks
           for (const rk of cur.rocks) {
             pushOutCircle(rk.x, rk.y, rk.r)
           }
-
-          // Lanterns
           for (const ln of cur.lanterns) {
             pushOutCircle(ln.x, ln.y, 12)
           }
-
-          // North Gate Pillars
           for (const tp of getGatePillars(cur)) {
             pushOutCircle(tp.x, tp.y, tp.r)
           }
         }
       }
 
+      // 3. O(1) Spatial Hash Tree Collision + Wilderness Water Pools + Mysterious Statues + Waystations!
+      if (showBgRef.current) {
+        const nearTrees = queryTreesInRect(cx - 90, cy - 90, cx + 90, cy + 90)
+        for (const tr of nearTrees) {
+          pushOutCircle(tr.x, tr.y, getTreeColliderRadius(tr))
+        }
+
+        for (const wp of WILDERNESS_POOLS) {
+          if (Math.abs(cx - wp.x) > wp.rx + 45 || Math.abs(cy - wp.y) > wp.ry + 45) continue
+          const dxW = cx - wp.x
+          const dyW = cy - wp.y
+          const ang = Math.atan2(dyW, dxW)
+          const pt = getWildernessPoolBoundary(wp, ang)
+          const radX = pt.rx + PLAYER_COLLIDER_R
+          const radY = pt.ry + PLAYER_COLLIDER_R
+          const nx = dxW / radX
+          const ny = dyW / radY
+          const d = Math.hypot(nx, ny)
+          if (d < 1.0) {
+            const safeD = Math.max(d, 0.0001)
+            cx = wp.x + (nx / safeD) * radX
+            cy = wp.y + (ny / safeD) * radY
+          }
+        }
+
+        for (const st of MYSTERIOUS_STATUES) {
+          if (Math.abs(cx - st.x) < 55 && Math.abs(cy - st.y) < 55) {
+            pushOutCircle(st.x, st.y, 20)
+          }
+        }
+
+        for (const ws of WAYSTATIONS) {
+          if (Math.abs(cx - ws.x) < 60 && Math.abs(cy - ws.y) < 60) {
+            pushOutCircle(ws.x, ws.y, 14)
+          }
+        }
+        for (const rk of WILDERNESS_ROCKS) {
+          if (Math.abs(cx - rk.x) < 60 && Math.abs(cy - rk.y) < 60) {
+            pushOutCircle(rk.x, rk.y, rk.r)
+          }
+        }
+      }
+
       return {
-        x: clamp(cx, -WORLD_LIMIT, WORLD_LIMIT),
-        y: clamp(cy, -WORLD_LIMIT, WORLD_LIMIT),
+        x: clamp(cx, -WORLD_LIMIT_X, WORLD_LIMIT_X),
+        y: clamp(cy, -WORLD_LIMIT_Y, WORLD_LIMIT_Y),
       }
     }
 
@@ -769,8 +945,9 @@ export default function Samurai2DPlatformer() {
     }
 
     const doReset = () => {
-      char.x = 0
-      char.y = 0
+      const home = CONTINENTS[0].origin
+      char.x = home.x
+      char.y = home.y
       char.vx = 0
       char.vy = 0
       char.heading = Math.PI
@@ -779,10 +956,12 @@ export default function Samurai2DPlatformer() {
       char.bowCooldown = 0
       char.bowRecoil = 0
       char.dashTimer = 0
-      cam.x = 0
-      cam.y = 0
-      resetSamuraiTopDownCloth(topRig, 0, 0, char.heading)
-      resetSamuraiCloth(sideRig, 0, 0, char.facing)
+      cam.x = home.x
+      cam.y = home.y
+      continentRef.current = CONTINENTS[0]
+      setContinentId('kyoto')
+      resetSamuraiTopDownCloth(topRig, home.x, home.y, char.heading)
+      resetSamuraiCloth(sideRig, home.x, home.y, char.facing)
     }
 
     const teleportTo = (wx: number, wy: number, label?: string, color?: string) => {
@@ -823,6 +1002,17 @@ export default function Samurai2DPlatformer() {
 
     const switchContinent = (id: ContinentId) => {
       const next = getContinentById(id)
+      if (!scoutUnlockRef.current && !discoveredRef.current[id]) {
+        floatingTexts.push({
+          x: char.x,
+          y: char.y - 44,
+          text: `🔒 ${next.shortName.toUpperCase()} LOCKED! Trek the Expedition Trail on foot (or check Map [M])`,
+          color: '#b84239',
+          age: 0,
+          duration: 2.1,
+        })
+        return
+      }
       teleportTo(next.origin.x, next.origin.y, `TELEPORTED · ${next.name.toUpperCase()}`, next.badgeColor)
     }
 
@@ -858,6 +1048,13 @@ export default function Samurai2DPlatformer() {
       }
 
       if (!wasDown && k === 'e' && !fullMapOpenRef.current) {
+        // Check if standing near an Unrecognized / Ancient Task Statue first!
+        for (const st of MYSTERIOUS_STATUES) {
+          if (Math.hypot(char.x - st.x, char.y - st.y) <= 125) {
+            startStatueTrial(st)
+            return
+          }
+        }
         const nearest = getNearestContinent(char.x, char.y)
         const distToShop = Math.hypot(char.x - nearest.shopPos.x, char.y - nearest.shopPos.y)
         if (distToShop <= SHOP_INTERACT_RADIUS + 40 || shopOpenRef.current) {
@@ -866,7 +1063,7 @@ export default function Samurai2DPlatformer() {
           floatingTexts.push({
             x: char.x,
             y: char.y - 36,
-            text: `Walk to ${nearest.shortName} Merchant Stall (NW) to Shop!`,
+            text: `Walk to Merchant Stall or Unknown Statue [?] to Interact!`,
             color: '#54534f',
             age: 0,
             duration: 1.2,
@@ -1024,34 +1221,43 @@ export default function Samurai2DPlatformer() {
       const clothFill = white ? '#f6f3ea' : '#c4c6c0'
       const shadeFill = white ? '#ded8c8' : '#9da099'
 
-      const drawMerchSandal = (fxOff: number, fyOff: number, flipX = 1) => {
+      const drawMerchSandal = (fxOff: number, fyOff: number, sideSign = 1) => {
         ctx.save()
         ctx.translate(fxOff, fyOff)
-        ctx.scale(flipX, 1)
-        // Thick 3D raised waraji sandal sole wall
+        // Slight natural outward front-view splay for Master Kenji facing toward the viewer!
+        ctx.rotate(sideSign * -0.14)
+        // 1. Thick 3D front-facing Waraji sole bumper wall
         ctx.beginPath()
-        ctx.moveTo(-5.2, 0.5)
-        ctx.quadraticCurveTo(0.6, 3.0, 6.2, 1.2)
-        ctx.quadraticCurveTo(7.2, 0.2, 6.4, -1.0)
-        ctx.lineTo(6.0, -2.0)
-        ctx.quadraticCurveTo(0.6, -0.3, -5.0, -1.6)
+        ctx.moveTo(-3.6, -0.4)
+        ctx.lineTo(-3.6, 1.8)
+        ctx.quadraticCurveTo(0, 4.4, 3.6, 1.8)
+        ctx.lineTo(3.6, -0.4)
         ctx.closePath()
         ctx.fillStyle = shadeFill
         ctx.fill()
         ctx.strokeStyle = ink
         ctx.lineWidth = 1.3
         ctx.stroke()
-        // Tabi foot dome & V-shaped hanao thong straps
+        // 2. Foreshortened front-view sandal footbed oval
         ctx.beginPath()
-        ctx.ellipse(0.6, -1.4, 5.4, 2.5, 0.05, 0, Math.PI * 2)
+        ctx.ellipse(0, 0.1, 3.6, 2.9, 0, 0, Math.PI * 2)
+        ctx.fillStyle = shadeFill
+        ctx.fill()
+        ctx.stroke()
+        // 3. Foreshortened front Tabi foot dome
+        ctx.beginPath()
+        ctx.ellipse(0, -0.4, 2.9, 2.4, 0, 0, Math.PI * 2)
         ctx.fillStyle = clothFill
         ctx.fill()
         ctx.stroke()
+        // 4. Symmetric front-facing V-shaped Hanao thong straps + split-toe cleft!
         ctx.beginPath()
-        ctx.moveTo(4.0, -1.7)
-        ctx.quadraticCurveTo(1.5, -3.4, -1.8, -0.4)
-        ctx.moveTo(4.0, -1.7)
-        ctx.quadraticCurveTo(2.0, -2.9, 1.2, 0.5)
+        ctx.moveTo(0, 1.4)
+        ctx.quadraticCurveTo(-1.4, -0.2, -2.7, -0.8)
+        ctx.moveTo(0, 1.4)
+        ctx.quadraticCurveTo(1.4, -0.2, 2.7, -0.8)
+        ctx.moveTo(0, 2.0)
+        ctx.lineTo(0, 1.2)
         ctx.lineWidth = 1.05
         ctx.stroke()
         ctx.restore()
@@ -1604,32 +1810,141 @@ export default function Samurai2DPlatformer() {
 
     const drawBirdsEyeWorldGround = (time: number, nearShopId: ContinentId | null, W: number, H: number) => {
       const white = isWhitePaper()
-      const cullX = W * 0.5 + 950
-      const cullY = H * 0.5 + 950
+      const cullX = W * 0.5 + 1450
+      const cullY = H * 0.5 + 1450
 
       if (showBgRef.current) {
-        // 0A. Softly Feathered Biome Territory Washes so walking between continents blends seamlessly!
+        // 0A. Broad Regional Biome Earth Washes across the entire 12,800 x 9,600 world!
         for (const cont of CONTINENTS) {
-          if (Math.abs(cont.origin.x - cam.x) > cullX || Math.abs(cont.origin.y - cam.y) > cullY) continue
+          const wideR = cont.territoryRadius * 2.9
+          if (Math.abs(cont.origin.x - cam.x) > W * 0.5 + wideR || Math.abs(cont.origin.y - cam.y) > H * 0.5 + wideR) {
+            continue
+          }
           const fillHex = white ? cont.paperBase : cont.boardBase
           const grad = ctx.createRadialGradient(
             cont.origin.x,
             cont.origin.y,
-            260,
+            wideR * 0.16,
             cont.origin.x,
             cont.origin.y,
-            880
+            wideR
           )
           grad.addColorStop(0, fillHex)
-          grad.addColorStop(0.72, fillHex)
+          grad.addColorStop(0.55, fillHex)
           grad.addColorStop(1, 'rgba(241, 236, 225, 0)')
           ctx.fillStyle = grad
           ctx.beginPath()
-          ctx.arc(cont.origin.x, cont.origin.y, 880, 0, Math.PI * 2)
+          ctx.arc(cont.origin.x, cont.origin.y, wideR, 0, Math.PI * 2)
           ctx.fill()
         }
 
-        // 0B. Cardinal Connecting Stepping-Stone Roads linking Kyoto Center to all 4 outer Continents!
+        // 0A-2. 18 Wilderness Water & Magma Pools nestled in forest clearings!
+        for (const wp of WILDERNESS_POOLS) {
+          if (Math.abs(wp.x - cam.x) > W * 0.5 + wp.rx + 60 || Math.abs(wp.y - cam.y) > H * 0.5 + wp.ry + 60) {
+            continue
+          }
+          ctx.save()
+          const buildWpPath = (inset = 0) => {
+            ctx.beginPath()
+            for (let i = 0; i <= 36; i++) {
+              const a = (i / 36) * Math.PI * 2
+              const pt = getWildernessPoolBoundary(wp, a)
+              const px = wp.x + Math.cos(a) * Math.max(8, pt.rx - inset)
+              const py = wp.y + Math.sin(a) * Math.max(8, pt.ry - inset)
+              if (i === 0) ctx.moveTo(px, py)
+              else ctx.lineTo(px, py)
+            }
+            ctx.closePath()
+          }
+
+          // Mossy / sandy / volcanic bank rim
+          buildWpPath(-5)
+          ctx.fillStyle =
+            wp.kind === 'magma'
+              ? 'rgba(58, 42, 36, 0.34)'
+              : wp.kind === 'oasis'
+                ? 'rgba(188, 156, 104, 0.30)'
+                : 'rgba(116, 130, 114, 0.26)'
+          ctx.fill()
+
+          // Shoreline pebbles
+          for (let i = 0; i < 18; i++) {
+            const a = (i / 18) * Math.PI * 2 + 0.15
+            const pt = getWildernessPoolBoundary(wp, a)
+            const sr = 5 + hash1(i * 7.3 + wp.seedA) * 4.5
+            ctx.save()
+            ctx.translate(pt.x + Math.cos(a) * 2, pt.y + Math.sin(a) * 2)
+            ctx.rotate(a)
+            ctx.fillStyle = wp.kind === 'magma' ? '#524a46' : white ? '#dfd8c8' : '#9aa09a'
+            ctx.beginPath()
+            ctx.ellipse(0, 0, sr, sr * 0.68, 0, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(54, 53, 50, 0.45)'
+            ctx.lineWidth = 0.8
+            ctx.stroke()
+            ctx.restore()
+          }
+
+          // Deep mineral-wash water / magma fill
+          buildWpPath(0)
+          const pGrad = ctx.createRadialGradient(wp.x - 8, wp.y - 10, 10, wp.x, wp.y, Math.max(wp.rx, wp.ry) * 1.05)
+          if (wp.kind === 'oasis') {
+            pGrad.addColorStop(0, white ? '#3e8e9c' : '#275c68')
+            pGrad.addColorStop(0.6, white ? '#76bec2' : '#46828a')
+            pGrad.addColorStop(1, white ? '#d8d4bc' : '#8e9684')
+          } else if (wp.kind === 'glacial-lake') {
+            pGrad.addColorStop(0, white ? '#3a5d76' : '#243c4f')
+            pGrad.addColorStop(0.6, white ? '#7299b2' : '#46687e')
+            pGrad.addColorStop(1, white ? '#d5e6ef' : '#89a1ae')
+          } else if (wp.kind === 'emerald-lagoon') {
+            pGrad.addColorStop(0, white ? '#2c6452' : '#1d4438')
+            pGrad.addColorStop(0.6, white ? '#58947d' : '#386856')
+            pGrad.addColorStop(1, white ? '#bfd5c0' : '#76907b')
+          } else if (wp.kind === 'magma') {
+            pGrad.addColorStop(0, '#f0b844')
+            pGrad.addColorStop(0.42, '#d8621e')
+            pGrad.addColorStop(1, '#4b2d24')
+          } else {
+            pGrad.addColorStop(0, white ? '#627e8a' : '#364b54')
+            pGrad.addColorStop(0.6, white ? '#94aeb6' : '#536c75')
+            pGrad.addColorStop(1, white ? '#d6dfdb' : '#849495')
+          }
+          ctx.fillStyle = pGrad
+          ctx.fill()
+
+          ctx.save()
+          buildWpPath(0)
+          ctx.clip()
+          buildWpPath(0)
+          ctx.strokeStyle = wp.kind === 'magma' ? 'rgba(42, 22, 18, 0.55)' : 'rgba(38, 52, 58, 0.32)'
+          ctx.lineWidth = 8
+          ctx.stroke()
+
+          // Gentle concentric surface ripples / magma bubbles
+          for (let rIdx = 0; rIdx < 3; rIdx++) {
+            const cyc = (time * 0.45 + rIdx * 0.33 + wp.seedA * 0.02) % 1
+            const rr = 5 + cyc * 24
+            const rxOff = (rIdx - 1) * wp.rx * 0.38
+            const ryOff = ((rIdx % 2) * 2 - 1) * wp.ry * 0.25
+            ctx.strokeStyle =
+              wp.kind === 'magma'
+                ? `rgba(255, 224, 120, ${(1 - cyc) * 0.65})`
+                : `rgba(255, 253, 246, ${(1 - cyc) * 0.38})`
+            ctx.lineWidth = 1.05
+            ctx.beginPath()
+            ctx.ellipse(wp.x + rxOff, wp.y + ryOff, rr, rr * 0.72, 0, 0, Math.PI * 2)
+            ctx.stroke()
+          }
+          ctx.restore()
+
+          buildWpPath(0)
+          ctx.strokeStyle = 'rgba(54, 53, 50, 0.58)'
+          ctx.lineWidth = 1.3
+          ctx.stroke()
+          ctx.restore()
+        }
+
+        // 0B. Long Winding Expedition Trail Stepping-Stones
         for (const st of CONNECTOR_STONES) {
           if (Math.abs(st.x - cam.x) > W * 0.5 + 80 || Math.abs(st.y - cam.y) > H * 0.5 + 80) continue
           ctx.save()
@@ -1649,26 +1964,69 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
 
-        // 0C. Wooden Trail Signposts at the 4 Cardinal Roads
-        for (const sp of ROAD_SIGNPOSTS) {
-          if (Math.abs(sp.x - cam.x) > W * 0.5 + 180 || Math.abs(sp.y - cam.y) > H * 0.5 + 120) continue
+        // 0C. Midway Waystation Rest Camps (Campfire + Straw Mat + Directional Signpost!)
+        for (const ws of WAYSTATIONS) {
+          if (Math.abs(ws.x - cam.x) > W * 0.5 + 260 || Math.abs(ws.y - cam.y) > H * 0.5 + 180) continue
           ctx.save()
-          ctx.translate(sp.x, sp.y)
-          ctx.font = 'bold 9.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
-          const tw = ctx.measureText(sp.label).width + 18
-          ctx.fillStyle = 'rgba(250, 247, 240, 0.92)'
-          ctx.strokeStyle = '#26262b'
-          ctx.lineWidth = 1.1
+          ctx.translate(ws.x, ws.y)
+
+          // Warm flickering campfire light aura
+          const fireGlow = 0.24 + Math.sin(time * 5.8 + ws.x) * 0.05
+          const cGrad = ctx.createRadialGradient(0, 0, 4, 0, 0, 58)
+          cGrad.addColorStop(0, `rgba(238, 152, 56, ${fireGlow})`)
+          cGrad.addColorStop(1, 'rgba(238, 152, 56, 0)')
+          ctx.fillStyle = cGrad
           ctx.beginPath()
-          ctx.roundRect(-tw * 0.5, -10, tw, 20, 3)
+          ctx.arc(0, 0, 58, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Stone fire-ring & crossed firewood logs
+          for (let s = 0; s < 8; s++) {
+            const a = (s / 8) * Math.PI * 2
+            ctx.fillStyle = '#6c6862'
+            ctx.beginPath()
+            ctx.arc(Math.cos(a) * 12, Math.sin(a) * 12, 3.6, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = '#26262b'
+            ctx.lineWidth = 0.9
+            ctx.stroke()
+          }
+          ctx.strokeStyle = '#523c28'
+          ctx.lineWidth = 3.2
+          ctx.beginPath()
+          ctx.moveTo(-7, -5)
+          ctx.lineTo(7, 5)
+          ctx.moveTo(7, -5)
+          ctx.lineTo(-7, 5)
+          ctx.stroke()
+
+          // Flickering flame core
+          ctx.fillStyle = '#ea6c28'
+          ctx.beginPath()
+          ctx.arc(0, -1, 6.2 + Math.sin(time * 8 + ws.y) * 0.8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = '#f8d264'
+          ctx.beginPath()
+          ctx.arc(0, -1.5, 3.2, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Directional Trail Signpost Banner
+          ctx.font = 'bold 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+          const banner = `${ws.name.toUpperCase()} · ${ws.signText}`
+          const tw = ctx.measureText(banner).width + 20
+          ctx.fillStyle = 'rgba(250, 247, 240, 0.94)'
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 1.15
+          ctx.beginPath()
+          ctx.roundRect(-tw * 0.5, -42, tw, 20, 3)
           ctx.fill()
           ctx.stroke()
-          ctx.fillStyle = sp.accent
-          ctx.fillRect(-tw * 0.5, -10, 4, 20)
+          ctx.fillStyle = ws.accent
+          ctx.fillRect(-tw * 0.5, -42, 4, 20)
           ctx.fillStyle = '#26262b'
           ctx.textAlign = 'center'
           ctx.textBaseline = 'middle'
-          ctx.fillText(sp.label, 2, 0.5)
+          ctx.fillText(banner, 2, -31.5)
           ctx.restore()
         }
 
@@ -1759,7 +2117,7 @@ export default function Samurai2DPlatformer() {
           }
           ctx.restore()
 
-          // Continent-specific rocks
+          // Continent-specific + nearby Wilderness rocks
           for (const rk of cur.rocks) {
             if (rk.kind === 'zen') {
               drawSketchCircle(rk.x, rk.y, rk.r + 14, rk.seed + 1, 0.18, 0.9)
@@ -2523,14 +2881,195 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
 
-        // 6. North Gate Shadow & Realistic 2.5D Flora Trunks (All 8 Botanical Species!)
-        ctx.save()
+        // 6. North Gate Shadow
         ctx.fillStyle = 'rgba(42, 40, 36, 0.10)'
         ctx.beginPath()
         ctx.roundRect(cur.gatePos.x - 84, cur.gatePos.y + 25, 196, 22, 6)
         ctx.fill()
 
-        for (const tr of cur.trees) {
+        // Wayshrine Seal Ring at Continent Center!
+        const isAttuned = scoutUnlockRef.current || Boolean(discoveredRef.current[cur.id])
+        ctx.save()
+        ctx.translate(cur.origin.x, cur.origin.y)
+        ctx.strokeStyle = isAttuned ? `${cur.badgeColor}66` : 'rgba(84, 83, 79, 0.25)'
+        ctx.lineWidth = isAttuned ? 1.8 : 1.1
+        ctx.setLineDash([7, 5])
+        ctx.beginPath()
+        ctx.arc(0, 0, 38, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.setLineDash([])
+        ctx.restore()
+        } // end visible continents loop
+
+        // 7. Wilderness Trail Boulders (viewport-culled)
+        for (const rk of WILDERNESS_ROCKS) {
+          if (Math.abs(rk.x - cam.x) > W * 0.5 + 80 || Math.abs(rk.y - cam.y) > H * 0.5 + 80) continue
+          ctx.fillStyle = 'rgba(42, 40, 36, 0.14)'
+          ctx.beginPath()
+          ctx.ellipse(rk.x + 4, rk.y + 4, rk.r * 1.05, rk.r * 0.76, 0.2, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle =
+            rk.kind === 'sandstone'
+              ? white
+                ? '#d6b27c'
+                : '#9c835d'
+              : rk.kind === 'ice'
+                ? white
+                  ? '#c4dfe9'
+                  : '#7ba0b2'
+                : rk.kind === 'basalt'
+                  ? white
+                    ? '#5c5550'
+                    : '#3d3835'
+                  : white
+                    ? '#b9bfb2'
+                    : '#7e8679'
+          ctx.beginPath()
+          ctx.ellipse(rk.x, rk.y, rk.r, rk.r * 0.76, 0.25, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = 'rgba(54, 53, 50, 0.65)'
+          ctx.lineWidth = 1.15
+          ctx.stroke()
+        }
+
+        // 8. Mysterious Unrecognized Stone Statues ('???' Ancient Task Relics) + Summoned Effigies!
+        for (const st of MYSTERIOUS_STATUES) {
+          if (Math.abs(st.x - cam.x) > W * 0.5 + 180 || Math.abs(st.y - cam.y) > H * 0.5 + 180) continue
+          const done = Boolean(completedStatuesRef.current[st.id])
+          const nearSt = Math.hypot(char.x - st.x, char.y - st.y) <= 125
+          ctx.save()
+          ctx.translate(st.x, st.y)
+
+          // Sacred mossy stone altar ring on ground
+          ctx.fillStyle = done ? 'rgba(229, 190, 98, 0.18)' : 'rgba(92, 68, 138, 0.12)'
+          ctx.beginPath()
+          ctx.ellipse(0, 4, 38, 24, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = done ? '#c68a32' : nearSt ? '#6b3fa0' : 'rgba(54, 53, 50, 0.35)'
+          ctx.lineWidth = nearSt || done ? 1.5 : 1.0
+          ctx.setLineDash([5, 4])
+          ctx.stroke()
+          ctx.setLineDash([])
+
+          // Cast shadow
+          ctx.fillStyle = 'rgba(32, 30, 28, 0.18)'
+          ctx.beginPath()
+          ctx.ellipse(10, 8, 22, 11, 0.1, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Stepped weathered stone pedestal
+          ctx.fillStyle = white ? '#cfc8b8' : '#8e908a'
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 1.25
+          ctx.beginPath()
+          ctx.roundRect(-20, -2, 40, 14, 2)
+          ctx.fill()
+          ctx.stroke()
+          ctx.fillStyle = white ? '#ded8ca' : '#9fa29b'
+          ctx.beginPath()
+          ctx.roundRect(-15, -10, 30, 10, 2)
+          ctx.fill()
+          ctx.stroke()
+
+          // Eroded Ancient Statue Silhouette (unrecognized weathered relic!)
+          ctx.fillStyle = white ? '#b9b4a6' : '#7d807a'
+          ctx.beginPath()
+          if (st.style === 'kitsune') {
+            ctx.moveTo(-11, -10)
+            ctx.lineTo(-9, -34)
+            ctx.lineTo(-13, -48)
+            ctx.lineTo(-3, -40)
+            ctx.lineTo(3, -40)
+            ctx.lineTo(13, -48)
+            ctx.lineTo(9, -34)
+            ctx.lineTo(11, -10)
+          } else if (st.style === 'obelisk') {
+            ctx.moveTo(-11, -10)
+            ctx.lineTo(-7, -50)
+            ctx.lineTo(0, -58)
+            ctx.lineTo(7, -50)
+            ctx.lineTo(11, -10)
+          } else if (st.style === 'oni') {
+            ctx.moveTo(-13, -10)
+            ctx.lineTo(-14, -36)
+            ctx.lineTo(-18, -50)
+            ctx.lineTo(-7, -42)
+            ctx.lineTo(7, -42)
+            ctx.lineTo(18, -50)
+            ctx.lineTo(14, -36)
+            ctx.lineTo(13, -10)
+          } else {
+            // Hooded monk / eroded guardian
+            ctx.moveTo(-13, -10)
+            ctx.quadraticCurveTo(-15, -28, -9, -40)
+            ctx.arc(0, -43, 9, Math.PI, 0)
+            ctx.quadraticCurveTo(15, -28, 13, -10)
+          }
+          ctx.closePath()
+          ctx.fill()
+          ctx.stroke()
+
+          // Ancient weathered cracks & moss patch + glowing spirit seal eye!
+          ctx.strokeStyle = 'rgba(42, 40, 38, 0.55)'
+          ctx.lineWidth = 0.9
+          ctx.beginPath()
+          ctx.moveTo(-5, -34)
+          ctx.lineTo(2, -26)
+          ctx.lineTo(-1, -18)
+          ctx.stroke()
+
+          ctx.fillStyle = done ? '#f5c84c' : '#7c52b8'
+          ctx.beginPath()
+          ctx.arc(0, -31, 3.2 + Math.sin(time * 4.5 + st.x) * 0.5, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.restore()
+        }
+
+        // Active Statue Trial Cursed Spirit Effigies!
+        if (activeStatueTrial) {
+          for (const ef of activeStatueTrial.effigies) {
+            if (!ef.alive) continue
+            const bob = Math.sin(time * 5.2 + ef.phase) * 3.0
+            ctx.save()
+            ctx.translate(ef.x, ef.y)
+            ctx.fillStyle = 'rgba(107, 63, 160, 0.22)'
+            ctx.beginPath()
+            ctx.ellipse(0, 4, 18, 10, 0, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.translate(0, bob)
+            ctx.fillStyle = '#362946'
+            ctx.strokeStyle = '#b84239'
+            ctx.lineWidth = 1.4
+            ctx.beginPath()
+            ctx.moveTo(-9, 2)
+            ctx.lineTo(-6, -26)
+            ctx.lineTo(0, -33)
+            ctx.lineTo(6, -26)
+            ctx.lineTo(9, 2)
+            ctx.closePath()
+            ctx.fill()
+            ctx.stroke()
+
+            // Glowing cursed crimson eye rune
+            ctx.fillStyle = '#f25c54'
+            ctx.beginPath()
+            ctx.arc(0, -16, 3.4, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.restore()
+          }
+        }
+
+        // 9. O(1) Spatial-Grid Realistic 2.5D Flora Trunks (sorted front-to-back by Y!)
+        const visibleTrees = queryTreesInRect(
+          cam.x - W * 0.5 - 120,
+          cam.y - H * 0.5 - 120,
+          cam.x + W * 0.5 + 120,
+          cam.y + H * 0.5 + 120
+        ).sort((a, b) => a.y - b.y)
+
+        ctx.save()
+        for (const tr of visibleTrees) {
           const colR = getTreeColliderRadius(tr)
           ctx.save()
           ctx.translate(tr.x, tr.y)
@@ -2925,7 +3464,6 @@ export default function Samurai2DPlatformer() {
           ctx.restore()
         }
         ctx.restore()
-        } // end visible continents loop
       }
 
       // Always render Collectibles, Dummies & visible Merchant Shop Outposts!
@@ -2948,8 +3486,8 @@ export default function Samurai2DPlatformer() {
       if (!showBgRef.current) return
 
       const white = isWhitePaper()
-      const cullX = W * 0.5 + 950
-      const cullY = H * 0.5 + 950
+      const cullX = W * 0.5 + 1450
+      const cullY = H * 0.5 + 1450
 
       for (const cur of CONTINENTS) {
         if (Math.abs(cur.origin.x - cam.x) > cullX || Math.abs(cur.origin.y - cam.y) > cullY) continue
@@ -3043,9 +3581,46 @@ export default function Samurai2DPlatformer() {
         }
       }
       ctx.restore()
+      } // end visible continent gates loop
 
-      // Real Botanical 2.5D Flora Crowns (All 8 Species!)
-      for (const tr of cur.trees) {
+      // Floating Callout Prompts above nearby Mysterious Statues!
+      for (const st of MYSTERIOUS_STATUES) {
+        if (Math.abs(st.x - cam.x) > W * 0.5 + 180 || Math.abs(st.y - cam.y) > H * 0.5 + 180) continue
+        const done = Boolean(completedStatuesRef.current[st.id])
+        const nearSt = Math.hypot(char.x - st.x, char.y - st.y) <= 135
+        const bobY = Math.sin(time * 3.4 + st.x) * 2.2
+        ctx.save()
+        ctx.translate(st.x, st.y - 68 + bobY)
+        const label = done
+          ? `★ ${st.trueName.toUpperCase()}`
+          : nearSt
+            ? `[E] or CLICK · AWAKEN STATUE TASK (+${st.rewardGold}G)`
+            : '❓ UNRECOGNIZED STATUE'
+        ctx.font = 'bold 9.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+        const bw = ctx.measureText(label).width + 18
+        ctx.fillStyle = done ? '#26262b' : nearSt ? '#4a326e' : 'rgba(250, 247, 240, 0.94)'
+        ctx.strokeStyle = done ? '#e5be62' : '#26262b'
+        ctx.lineWidth = 1.2
+        ctx.beginPath()
+        ctx.roundRect(-bw * 0.5, -10, bw, 20, 4)
+        ctx.fill()
+        ctx.stroke()
+        ctx.fillStyle = done ? '#e5be62' : nearSt ? '#faf7f0' : '#26262b'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(label, 0, 0.5)
+        ctx.restore()
+      }
+
+      // Real Botanical 2.5D Flora Crowns via O(1) Spatial Hash Grid!
+      const visibleCrowns = queryTreesInRect(
+        cam.x - W * 0.5 - 130,
+        cam.y - H * 0.5 - 130,
+        cam.x + W * 0.5 + 130,
+        cam.y + H * 0.5 + 130
+      ).sort((a, b) => a.y - b.y)
+
+      for (const tr of visibleCrowns) {
         const swayX = Math.sin(time * 1.1 + tr.seed) * 2.2
         const swayY = Math.cos(time * 0.85 + tr.seed * 1.3) * 1.2
 
@@ -3385,7 +3960,6 @@ export default function Samurai2DPlatformer() {
         }
         ctx.restore()
       }
-      } // end visible continents overhead loop
     }
 
     // =========================================================================
@@ -3560,13 +4134,29 @@ export default function Samurai2DPlatformer() {
         if (dm.cutTimer > 0) dm.cutTimer = Math.max(0, dm.cutTimer - rawDt)
       }
 
+      if (activeStatueTrial) {
+        activeStatueTrial.timeLeft -= rawDt
+        if (activeStatueTrial.timeLeft <= 0) {
+          const st = activeStatueTrial.statue
+          activeStatueTrial = null
+          floatingTexts.push({
+            x: st.x,
+            y: st.y - 54,
+            text: 'STATUE INCENSE FADED · Press [E] at Statue to Retry!',
+            color: '#8c4a44',
+            age: 0,
+            duration: 1.9,
+          })
+        }
+      }
+
       for (let i = floatingTexts.length - 1; i >= 0; i--) {
         floatingTexts[i].age += rawDt
         floatingTexts[i].y -= 24 * rawDt
         if (floatingTexts[i].age >= floatingTexts[i].duration) floatingTexts.splice(i, 1)
       }
 
-      // Detect walking across continent borders in the unified open world!
+      // Detect walking across continent borders & attuning new Continent Wayshrines!
       const nearestContinent = getNearestContinent(char.x, char.y)
       if (nearestContinent.id !== continentRef.current.id) {
         const prevWeather = continentRef.current.weatherKind
@@ -3578,10 +4168,28 @@ export default function Samurai2DPlatformer() {
         floatingTexts.push({
           x: char.x,
           y: char.y - 46,
-          text: `ENTERED · ${nearestContinent.name.toUpperCase()}`,
+          text: `ENTERED REGION · ${nearestContinent.name.toUpperCase()} (${nearestContinent.tierLabel})`,
           color: nearestContinent.badgeColor,
           age: 0,
-          duration: 1.75,
+          duration: 1.95,
+        })
+      }
+
+      if (
+        !discoveredRef.current[nearestContinent.id] &&
+        Math.hypot(char.x - nearestContinent.origin.x, char.y - nearestContinent.origin.y) <= WAYSHRINE_UNLOCK_RADIUS
+      ) {
+        const updated = { ...discoveredRef.current, [nearestContinent.id]: true }
+        discoveredRef.current = updated
+        setDiscoveredContinents(updated)
+        spawnSlashSparks(char.x, char.y, -Math.PI * 0.5, 22)
+        floatingTexts.push({
+          x: char.x,
+          y: char.y - 64,
+          text: `✦ WAYSHRINE UNLOCKED · ${nearestContinent.shortName.toUpperCase()} TELEPORT ENABLED! ✦`,
+          color: '#c68a32',
+          age: 0,
+          duration: 2.6,
         })
       }
 
@@ -3707,29 +4315,22 @@ export default function Samurai2DPlatformer() {
 
         if (
           ar.age >= ar.maxAge ||
-          Math.abs(ar.x) > WORLD_LIMIT ||
-          Math.abs(ar.y) > WORLD_LIMIT
+          Math.abs(ar.x) > WORLD_LIMIT_X ||
+          Math.abs(ar.y) > WORLD_LIMIT_Y
         ) {
           arrowProjectiles.splice(i, 1)
           continue
         }
 
-        // Stop arrow if it strikes ANY continent's Merchant Stall, Tree/Cactus, Rock, Lantern, or Gate Pillar!
+        // Stop arrow if it strikes ANY continent's Merchant Stall, Tree/Cactus, Rock, Lantern, Gate Pillar, or Statue!
         let blocked = false
         for (const cont of CONTINENTS) {
-          if (Math.abs(ar.x - cont.origin.x) > 920 || Math.abs(ar.y - cont.origin.y) > 920) continue
+          if (Math.abs(ar.x - cont.origin.x) > 1350 || Math.abs(ar.y - cont.origin.y) > 1350) continue
           if (Math.abs(ar.x - cont.shopPos.x) < 42 && Math.abs(ar.y - cont.shopPos.y) < 28) {
             blocked = true
             break
           }
           if (!showBgRef.current) continue
-          for (const tr of cont.trees) {
-            if (Math.hypot(ar.x - tr.x, ar.y - tr.y) < getTreeColliderRadius(tr)) {
-              blocked = true
-              break
-            }
-          }
-          if (blocked) break
           for (const rk of cont.rocks) {
             if (Math.hypot(ar.x - rk.x, ar.y - rk.y) < rk.r) {
               blocked = true
@@ -3752,10 +4353,62 @@ export default function Samurai2DPlatformer() {
           }
           if (blocked) break
         }
+        if (!blocked && showBgRef.current) {
+          const nearTrees = queryTreesInRect(ar.x - 65, ar.y - 65, ar.x + 65, ar.y + 65)
+          for (const tr of nearTrees) {
+            if (Math.hypot(ar.x - tr.x, ar.y - tr.y) < getTreeColliderRadius(tr)) {
+              blocked = true
+              break
+            }
+          }
+          if (!blocked) {
+            for (const rk of WILDERNESS_ROCKS) {
+              if (Math.abs(ar.x - rk.x) < 40 && Math.abs(ar.y - rk.y) < 40 && Math.hypot(ar.x - rk.x, ar.y - rk.y) < rk.r) {
+                blocked = true
+                break
+              }
+            }
+          }
+          if (!blocked) {
+            for (const st of MYSTERIOUS_STATUES) {
+              if (Math.hypot(ar.x - st.x, ar.y - st.y) < 20) {
+                blocked = true
+                break
+              }
+            }
+          }
+        }
         if (blocked) {
           spawnSlashSparks(ar.x, ar.y, ar.angle + Math.PI, 7)
           arrowProjectiles.splice(i, 1)
           continue
+        }
+
+        // Check hitting Cursed Spirit Effigies of an active Statue Task!
+        if (activeStatueTrial) {
+          let hitEffigy = false
+          for (const ef of activeStatueTrial.effigies) {
+            if (ef.alive && Math.hypot(ef.x - ar.x, ef.y - ar.y) < 22) {
+              ef.alive = false
+              hitEffigy = true
+              spawnSlashSparks(ef.x, ef.y, ar.angle, 18)
+              const brokenCount = activeStatueTrial.effigies.filter((e) => !e.alive).length
+              floatingTexts.push({
+                x: ef.x,
+                y: ef.y - 20,
+                text: `EFFIGY BULLSEYE (${brokenCount}/3)!`,
+                color: '#6b3fa0',
+                age: 0,
+                duration: 1.25,
+              })
+              break
+            }
+          }
+          if (hitEffigy) {
+            completeStatueTrialIfDone()
+            arrowProjectiles.splice(i, 1)
+            continue
+          }
         }
 
         let hitDummy = false
@@ -4143,15 +4796,9 @@ export default function Samurai2DPlatformer() {
             ctx.fillRect(br.minX, br.yCenter - br.halfH, br.maxX - br.minX, br.halfH * 2)
             ctx.strokeRect(br.minX, br.yCenter - br.halfH, br.maxX - br.minX, br.halfH * 2)
 
-            // 6. Trees, Rocks, Lanterns, Gate Pillars
+            // 6. Rocks, Lanterns, Gate Pillars
             ctx.strokeStyle = '#d97706'
             ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
-            for (const tr of cont.trees) {
-              ctx.beginPath()
-              ctx.arc(tr.x, tr.y, getTreeColliderRadius(tr), 0, Math.PI * 2)
-              ctx.fill()
-              ctx.stroke()
-            }
             for (const rk of cont.rocks) {
               ctx.beginPath()
               ctx.arc(rk.x, rk.y, rk.r, 0, Math.PI * 2)
@@ -4170,6 +4817,38 @@ export default function Samurai2DPlatformer() {
               ctx.fill()
               ctx.stroke()
             }
+          }
+
+          // Visible Spatial-Grid Trees, Wilderness Water Pools & Statues Hitboxes
+          ctx.strokeStyle = '#d97706'
+          ctx.fillStyle = 'rgba(217, 119, 6, 0.12)'
+          for (const tr of queryTreesInRect(cam.x - W * 0.5 - 80, cam.y - H * 0.5 - 80, cam.x + W * 0.5 + 80, cam.y + H * 0.5 + 80)) {
+            ctx.beginPath()
+            ctx.arc(tr.x, tr.y, getTreeColliderRadius(tr), 0, Math.PI * 2)
+            ctx.fill()
+            ctx.stroke()
+          }
+          for (const st of MYSTERIOUS_STATUES) {
+            if (Math.abs(st.x - cam.x) > W * 0.5 + 80 || Math.abs(st.y - cam.y) > H * 0.5 + 80) continue
+            ctx.beginPath()
+            ctx.arc(st.x, st.y, 20, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.stroke()
+          }
+          ctx.strokeStyle = '#0284c7'
+          ctx.fillStyle = 'rgba(2, 132, 199, 0.10)'
+          for (const wp of WILDERNESS_POOLS) {
+            if (Math.abs(wp.x - cam.x) > W * 0.5 + wp.rx + 40 || Math.abs(wp.y - cam.y) > H * 0.5 + wp.ry + 40) continue
+            ctx.beginPath()
+            for (let i = 0; i <= 32; i++) {
+              const a = (i / 32) * Math.PI * 2
+              const pt = getWildernessPoolBoundary(wp, a)
+              if (i === 0) ctx.moveTo(pt.x, pt.y)
+              else ctx.lineTo(pt.x, pt.y)
+            }
+            ctx.closePath()
+            ctx.fill()
+            ctx.stroke()
           }
         }
         ctx.setLineDash([])
@@ -4424,9 +5103,40 @@ export default function Samurai2DPlatformer() {
             for (const ln of cont.lanterns) {
               ctx.fillRect(toMapX(ln.x) - 1.3, toMapY(ln.y) - 1.3, 2.6, 2.6)
             }
+          }
 
-            // ACTUAL MINIATURE TREES ON THE MINIMAP (All 8 Botanical Species!)
-            for (const tr of cont.trees) {
+          // Nearby Wilderness Water & Magma Pools on Minimap
+          for (const wp of WILDERNESS_POOLS) {
+            if (Math.abs(wp.x - char.x) > 850 || Math.abs(wp.y - char.y) > 750) continue
+            ctx.beginPath()
+            for (let i = 0; i <= 24; i++) {
+              const a = (i / 24) * Math.PI * 2
+              const pt = getWildernessPoolBoundary(wp, a)
+              const px = toMapX(pt.x)
+              const py = toMapY(pt.y)
+              if (i === 0) ctx.moveTo(px, py)
+              else ctx.lineTo(px, py)
+            }
+            ctx.closePath()
+            ctx.fillStyle =
+              wp.kind === 'oasis'
+                ? '#64b2b8'
+                : wp.kind === 'glacial-lake'
+                  ? '#6e97b0'
+                  : wp.kind === 'emerald-lagoon'
+                    ? '#4c8670'
+                    : wp.kind === 'magma'
+                      ? '#d45b1c'
+                      : '#7a98a3'
+            ctx.fill()
+            ctx.strokeStyle = '#363532'
+            ctx.lineWidth = 0.85
+            ctx.stroke()
+          }
+
+          // ACTUAL MINIATURE TREES ON THE MINIMAP ACROSS ENTIRE WORLD (Continent + Dense Forest!)
+          const miniTrees = queryTreesInRect(char.x - 720, char.y - 620, char.x + 720, char.y + 620)
+          for (const tr of miniTrees) {
               const tx = toMapX(tr.x)
               const ty = toMapY(tr.y)
               if (tx < mapX - 12 || tx > mapX + mapW + 12 || ty < bodyY - 12 || ty > mapY + mapH + 12) continue
@@ -4569,10 +5279,39 @@ export default function Samurai2DPlatformer() {
               }
               ctx.restore()
             }
-          }
         }
 
-        // Merchant Shop Stall icons across all nearby continents
+        // Merchant Shop Stall icons, Waystation Campfires & Mysterious Statues ('?' / '★')
+        for (const ws of WAYSTATIONS) {
+          const wx = toMapX(ws.x)
+          const wy = toMapY(ws.y)
+          if (wx < mapX - 8 || wx > mapX + mapW + 8 || wy < bodyY - 8 || wy > mapY + mapH + 8) continue
+          ctx.fillStyle = '#ea6c28'
+          ctx.beginPath()
+          ctx.arc(wx, wy, 3.0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 0.8
+          ctx.stroke()
+        }
+        for (const st of MYSTERIOUS_STATUES) {
+          const sx = toMapX(st.x)
+          const sy = toMapY(st.y)
+          if (sx < mapX - 10 || sx > mapX + mapW + 10 || sy < bodyY - 10 || sy > mapY + mapH + 10) continue
+          const done = Boolean(completedStatuesRef.current[st.id])
+          ctx.fillStyle = done ? '#e5be62' : '#4a3d5c'
+          ctx.beginPath()
+          ctx.arc(sx, sy, 5.2, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#26262b'
+          ctx.lineWidth = 0.9
+          ctx.stroke()
+          ctx.fillStyle = done ? '#222226' : '#faf7f0'
+          ctx.font = 'bold 7.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(done ? '★' : '?', sx, sy + 0.5)
+        }
         for (const cont of CONTINENTS) {
           const sx = toMapX(cont.shopPos.x)
           const sy = toMapY(cont.shopPos.y)
@@ -4670,6 +5409,17 @@ export default function Samurai2DPlatformer() {
           nearShop: isNearShop,
           focusSec: Math.ceil(focusTimerRef.current),
         })
+        if (activeStatueTrial) {
+          setActiveStatueTaskHud({
+            prompt: activeStatueTrial.statue.taskPrompt,
+            broken: activeStatueTrial.effigies.filter((e) => !e.alive).length,
+            total: activeStatueTrial.effigies.length,
+            timeLeft: Math.ceil(activeStatueTrial.timeLeft),
+            rewardGold: activeStatueTrial.statue.rewardGold,
+          })
+        } else {
+          setActiveStatueTaskHud(null)
+        }
       }
     }
 
@@ -4719,6 +5469,13 @@ export default function Samurai2DPlatformer() {
             const clickScreenY = localY - rect.height * 0.5
             const worldClickX = hudStats.x + clickScreenX
             const worldClickY = hudStats.y + clickScreenY
+            // If clicking directly on an Unrecognized / Ancient Task Statue when nearby, start its Trial!
+            for (const st of MYSTERIOUS_STATUES) {
+              if (Math.hypot(worldClickX - st.x, worldClickY - st.y) < 56 && Math.hypot(hudStats.x - st.x, hudStats.y - st.y) <= 185) {
+                interactStatueRef.current?.(st)
+                return
+              }
+            }
             // If clicking directly on ANY continent's Merchant Stall on the map, open the Shop!
             for (const cont of CONTINENTS) {
               if (Math.hypot(worldClickX - cont.shopPos.x, worldClickY - cont.shopPos.y) < 72) {
@@ -4761,31 +5518,38 @@ export default function Samurai2DPlatformer() {
             </div>
           </div>
 
-          {/* 5-Continent Fast-Teleport + Full Map Bar */}
+          {/* 5-Continent Wayshrine Fast-Teleport + Full Map Bar */}
           <div className="flex flex-wrap items-center gap-1 bg-white/85 backdrop-blur-sm border border-[#26262b] px-2 py-1.5">
             <span className="text-[9px] uppercase tracking-widest font-bold text-[#5a5a60] mr-1">
-              TELEPORT
+              WAYSHRINES
             </span>
             {CONTINENTS.map((cont) => {
               const isActive = cont.id === continentId
+              const isUnlocked = scoutUnlockAll || Boolean(discoveredContinents[cont.id])
               return (
                 <button
                   key={cont.id}
                   type="button"
                   onClick={() => switchContinentRef.current?.(cont.id)}
-                  className={`px-2 py-0.5 text-[10px] uppercase border transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  className={`px-2 py-0.5 text-[10px] uppercase border transition-colors cursor-pointer flex items-center gap-1 ${
                     isActive
                       ? 'bg-[#26262b] border-[#26262b] text-[#faf7f0] font-bold'
-                      : 'bg-white/80 border-[#26262b]/35 hover:border-[#26262b] text-[#26262b]'
+                      : isUnlocked
+                        ? 'bg-white/85 border-[#26262b]/45 hover:border-[#26262b] text-[#26262b]'
+                        : 'bg-black/5 border-[#26262b]/25 text-[#777]'
                   }`}
-                  title={`Teleport to ${cont.name} (${cont.regionTag}) [Key ${cont.keyNum}] — or walk there on foot!`}
+                  title={
+                    isUnlocked
+                      ? `Teleport to ${cont.name} (${cont.tierLabel}) [Key ${cont.keyNum}]`
+                      : `🔒 ${cont.name} (${cont.tierLabel}) — Walk the Expedition Trail on foot to unlock Wayshrine!`
+                  }
                 >
                   <span
                     className="inline-block w-2 h-2 rounded-full"
                     style={{ backgroundColor: cont.badgeColor }}
                   />
                   <span>
-                    [{cont.keyNum}] {cont.shortName}
+                    {isUnlocked ? '' : '🔒'}[{cont.keyNum}] {cont.shortName}
                   </span>
                 </button>
               )
@@ -4799,6 +5563,22 @@ export default function Samurai2DPlatformer() {
               World Map [M]
             </button>
           </div>
+
+          {/* Live Ancient Statue Task Tracker Banner */}
+          {activeStatueTaskHud && (
+            <div className="px-3 py-1.5 bg-[#362946]/95 text-[#faf7f0] border border-[#e5be62] flex items-center justify-between gap-3 text-[11px]">
+              <div>
+                <span className="font-extrabold text-[#e5be62] uppercase mr-2">❓ STATUE TASK:</span>
+                <span>{activeStatueTaskHud.prompt}</span>
+              </div>
+              <div className="font-bold whitespace-nowrap">
+                <span className="px-1.5 py-0.5 bg-[#e5be62] text-[#222226] mr-1.5">
+                  {activeStatueTaskHud.broken}/{activeStatueTaskHud.total}
+                </span>
+                <span>{activeStatueTaskHud.timeLeft}s</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right HUD: Gold Coin Pouch + Shop Button + State (shifts left cleanly when top-right Minimap is visible) */}
@@ -4873,6 +5653,10 @@ export default function Samurai2DPlatformer() {
           playerY={hudStats.y}
           playerHeading={hudStats.heading}
           activeContinentId={continentId}
+          discoveredContinents={discoveredContinents}
+          completedStatues={completedStatues}
+          scoutUnlockAll={scoutUnlockAll}
+          onToggleScoutUnlock={() => setScoutUnlockAll((v) => !v)}
           onTeleportWorld={(wx, wy, label, color) => teleportWorldRef.current?.(wx, wy, label, color)}
           onTeleportContinent={(id) => switchContinentRef.current?.(id)}
           onClose={() => setFullMapOpen(false)}

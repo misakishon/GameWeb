@@ -2257,70 +2257,137 @@ export function drawSamuraiTopDown(
     ctx.restore()
   }
 
-  // --- HELPER: FULL 2.5D LEG (BLOUSON HAKAMA + 4-WRAP KYAHAN SHIN + 3D THICK-SOLED WARAJI SANDAL!) ---
+  // --- HELPER: FULL 2.5D LEG (BLOUSON HAKAMA + 4-WRAP KYAHAN SHIN + TRUE 360° FORESHORTENED WARAJI SANDAL!) ---
   const drawLeg25D = (side: -1 | 1, footFwd: number, lift: number, isBack: boolean) => {
     const fill = isBack ? pal.fillBack : pal.fillMain
-    const hip = proj(leanFwd * 0.2, side * 5.0, hipZ)
+    const hip = proj(leanFwd * 0.2, side * 5.2, hipZ)
     const strideFwd = footFwd * 1.18
     const footZ = lift * 6.5
-    const ankle = proj(strideFwd, side * 5.8, footZ + 4.0)
+    const ankle = proj(strideFwd, side * 6.0, footZ + 4.1)
     const knee = proj(
       lerp(leanFwd * 0.2, strideFwd, 0.5) + 2.8 + lift * 2.5,
-      side * 5.5,
-      lerp(hipZ, footZ + 4.0, 0.52) + lift * 2.0
+      side * 5.7,
+      lerp(hipZ, footZ + 4.1, 0.52) + lift * 2.0
     )
     const cuff = { x: lerp(knee.x, ankle.x, 0.28), y: lerp(knee.y, ankle.y, 0.28) }
 
-    // 1. 3D Thick-Soled Waraji Sandal & Tabi Foot (with raised sole wall + V-shaped hanao thong straps!)
-    const footGround = proj(strideFwd, side * 5.8, footZ)
-    const faceSign = fx >= -0.05 ? 1 : -1
-    const footTilt = clamp(fy * 0.16 * faceSign, -0.22, 0.22)
-    ctx.save()
-    ctx.translate(footGround.x + fx * 1.8, footGround.y + fy * 0.7)
-    ctx.rotate(footTilt)
-    ctx.scale(faceSign, 1)
+    // 1. TRUE 3D-PROJECTED 360° WARAJI SANDAL & TABI FOOT (foreshortens naturally in Front, Back, 3/4 & Side views!)
+    const footGround = proj(strideFwd, side * 6.0, footZ)
+    // Subtle natural outward stance splay (~11°) when facing Front (+Y) or Back (-Y)
+    const splay = side * 0.19 * (1 - Math.abs(fx) * 0.75)
+    const footAng3D = rig.heading + splay
+    const ufx = Math.cos(footAng3D)
+    const ufy = Math.sin(footAng3D)
 
-    // Thick 3D raised sandal sole base (bottom rim wall)
+    const pFoot = (len: number, wid: number, z: number): Vec2 => ({
+      x: footGround.x + len * ufx - wid * ufy,
+      y: footGround.y + (len * ufy + wid * ufx) * DEPTH_Y - z,
+    })
+
+    const soleH = 2.3
+    const cLen = 1.65
+    const halfL = 6.7
+    const halfW = 3.85
+    const segs = 24
+    const topRim: Vec2[] = []
+    let minIdx = 0
+    let maxIdx = 0
+    for (let i = 0; i < segs; i++) {
+      const a = (i / segs) * Math.PI * 2
+      const pt = pFoot(cLen + Math.cos(a) * halfL, Math.sin(a) * halfW, soleH)
+      topRim.push(pt)
+      if (pt.x < topRim[minIdx].x) minIdx = i
+      if (pt.x > topRim[maxIdx].x) maxIdx = i
+    }
+
+    // Determine which arc between minIdx and maxIdx is the visible lower/front screen edge!
+    const midFwdIdx = ((minIdx + Math.floor(((maxIdx - minIdx + segs) % segs) * 0.5)) % segs)
+    const midRevIdx = ((maxIdx + Math.floor(((minIdx - maxIdx + segs) % segs) * 0.5)) % segs)
+    const goForward = topRim[midFwdIdx].y >= topRim[midRevIdx].y
+
+    // 1A. Extruded 3D thick sandal sole side wall (wraps cleanly around front toe in Front View & side in Side View!)
     ctx.beginPath()
-    ctx.moveTo(-6.2, 0.6)
-    ctx.quadraticCurveTo(0.8, 3.6, 7.6, 1.4)
-    ctx.quadraticCurveTo(8.8, 0.4, 7.8, -1.2)
-    ctx.lineTo(7.4, -2.5)
-    ctx.quadraticCurveTo(0.8, -0.4, -6.0, -2.0)
-    ctx.quadraticCurveTo(-7.2, -0.8, -6.2, 0.6)
+    ctx.moveTo(topRim[minIdx].x, topRim[minIdx].y)
+    ctx.lineTo(topRim[minIdx].x, topRim[minIdx].y + soleH)
+    let idx = minIdx
+    while (idx !== maxIdx) {
+      idx = goForward ? (idx + 1) % segs : (idx - 1 + segs) % segs
+      ctx.lineTo(topRim[idx].x, topRim[idx].y + soleH)
+    }
+    ctx.lineTo(topRim[maxIdx].x, topRim[maxIdx].y)
+    // Close back along upper rim
+    while (idx !== minIdx) {
+      idx = goForward ? (idx - 1 + segs) % segs : (idx + 1) % segs
+      ctx.lineTo(topRim[idx].x, topRim[idx].y)
+    }
     ctx.closePath()
     ctx.fillStyle = pal.fillShade
     ctx.fill()
-    strokeInk(1.45)
+    strokeInk(1.42)
 
-    // Upper sandal footbed rim
+    // 1B. Top woven Waraji footbed surface
     ctx.beginPath()
-    ctx.ellipse(0.9, -1.2, 7.3, 3.3, 0.06, 0, Math.PI * 2)
+    for (let i = 0; i < segs; i++) {
+      if (i === 0) ctx.moveTo(topRim[i].x, topRim[i].y)
+      else ctx.lineTo(topRim[i].x, topRim[i].y)
+    }
+    ctx.closePath()
     ctx.fillStyle = pal.hatFill
     ctx.fill()
-    strokeInk(1.3)
+    strokeInk(1.25)
 
-    // Tabi foot dome resting snug inside the sandal
+    // 1C. 3D Domed Tabi Foot (rises up at instep/ankle, tapers forward to toes, foreshortens in Front/Back view!)
+    const tabiSegs = 20
     ctx.beginPath()
-    ctx.moveTo(-4.8, -1.8)
-    ctx.quadraticCurveTo(-4.6, -5.2, -0.6, -5.0)
-    ctx.quadraticCurveTo(4.2, -4.6, 6.4, -1.5)
-    ctx.quadraticCurveTo(2.4, 0.6, -4.8, -1.8)
+    for (let i = 0; i < tabiSegs; i++) {
+      const a = (i / tabiSegs) * Math.PI * 2
+      const l = 1.25 + Math.cos(a) * 5.15
+      const w = Math.sin(a) * 3.05
+      const instepLift = clamp((2.9 - l) * 0.36, 0, 2.45)
+      const pt = pFoot(l, w, soleH + 0.32 + instepLift)
+      if (i === 0) ctx.moveTo(pt.x, pt.y)
+      else ctx.lineTo(pt.x, pt.y)
+    }
     ctx.closePath()
     ctx.fillStyle = fill
     ctx.fill()
-    strokeInk(1.35)
+    strokeInk(1.34)
 
-    // Signature V-shaped Waraji sandal thong straps (hanao) + heel band
-    ctx.beginPath()
-    ctx.moveTo(4.8, -2.0)
-    ctx.quadraticCurveTo(1.8, -4.2, -2.2, -0.6)
-    ctx.moveTo(4.8, -2.0)
-    ctx.quadraticCurveTo(2.6, -3.5, 1.6, 0.6)
-    ctx.moveTo(-4.4, -2.0)
-    ctx.quadraticCurveTo(-2.4, -3.8, -0.2, -4.2)
-    strokeInk(1.15, pal.ink)
-    ctx.restore()
+    // 1D. Authentic V-Shaped Hanao Thong Straps & Split-Toe Tabi Cleft (rotates smoothly in 3D!)
+    if (ufy > -0.45) {
+      const cleftSide = side * 0.25
+      const toeCleft = pFoot(5.1, cleftSide, soleH + 0.55)
+      const strapL = pFoot(0.1, -3.1, soleH + 0.45)
+      const strapR = pFoot(0.1, 3.1, soleH + 0.45)
+      const midSL = pFoot(2.6, -1.6, soleH + 1.85)
+      const midSR = pFoot(2.6, 1.6, soleH + 1.85)
+
+      ctx.beginPath()
+      ctx.moveTo(toeCleft.x, toeCleft.y)
+      ctx.quadraticCurveTo(midSL.x, midSL.y, strapL.x, strapL.y)
+      ctx.moveTo(toeCleft.x, toeCleft.y)
+      ctx.quadraticCurveTo(midSR.x, midSR.y, strapR.x, strapR.y)
+      // Subtle front split-toe tabi notch when facing Front / 3/4-Front!
+      if (ufy > 0.28) {
+        const tipNotch = pFoot(6.35, cleftSide, soleH + 0.35)
+        ctx.moveTo(tipNotch.x, tipNotch.y)
+        ctx.lineTo(toeCleft.x, toeCleft.y)
+      }
+      strokeInk(1.15, pal.ink)
+    }
+    if (ufy < 0.35) {
+      // Rear Waraji heel-tie cords visible in Side & Back views
+      const hL = pFoot(-4.2, -2.5, soleH + 0.4)
+      const hR = pFoot(-4.2, 2.5, soleH + 0.4)
+      const aL = pFoot(-1.6, -2.4, soleH + 2.5)
+      const aR = pFoot(-1.6, 2.4, soleH + 2.5)
+      ctx.beginPath()
+      ctx.moveTo(hL.x, hL.y)
+      ctx.lineTo(aL.x, aL.y)
+      ctx.moveTo(hR.x, hR.y)
+      ctx.lineTo(aR.x, aR.y)
+      strokeInk(1.05, pal.ink)
+    }
 
     // 2. Tall Wrapped Kyahan Shin Guard (cuff -> ankle) with 4 crisp cloth wrap bands!
     const sdx = ankle.x - cuff.x
